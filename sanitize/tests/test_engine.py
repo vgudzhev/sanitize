@@ -394,7 +394,8 @@ class TestChunkedDetection:
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
         sanitize.engine._analyzer_cache = None
 
-        clean_text = "# safe comment\n" * 500
+        # Text passes prefilter (password=) but has no real detections
+        clean_text = "# set password=ok then restart\n" * 200
         assert len(clean_text) > CHUNK_THRESHOLD
 
         detect(clean_text, policy_config=policy)
@@ -407,13 +408,13 @@ class TestChunkedDetection:
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
         sanitize.engine._analyzer_cache = None
 
-        clean_text = "# safe comment\n" * 500
+        clean_text = "# set password=ok then restart\n" * 200
         assert len(clean_text) > CHUNK_THRESHOLD
 
         detect(clean_text, policy_config=policy)
-        with patch.object(sanitize.engine, "_detect_single", wraps=sanitize.engine._detect_single) as spy:
+        with patch.object(sanitize.engine, "_detect_chunk_fast", wraps=sanitize.engine._detect_chunk_fast) as spy:
             detect(clean_text, policy_config=policy)
-            assert spy.call_count == 0, "Cached chunks should skip _detect_single"
+            assert spy.call_count == 0, "Cached chunks should skip _detect_chunk_fast"
 
     def test_private_key_straddling_boundary(self, policy):
         import sanitize.engine
@@ -447,7 +448,7 @@ class TestChunkedDetection:
         sanitize.engine._analyzer_cache = None
 
         policy_a = load_policy()
-        clean_text = "# harmless text here\n" * 500
+        clean_text = "# set password=ok then restart\n" * 200
         detect(clean_text, policy_config=policy_a)
         cached_a = len(sanitize.engine._CLEAN_CHUNK_CACHE)
         assert cached_a > 0
@@ -456,6 +457,20 @@ class TestChunkedDetection:
         policy_b = load_policy()
         policy_b["extra_flag"] = True
         sanitize.engine._analyzer_cache = None
-        with patch.object(sanitize.engine, "_detect_single", wraps=sanitize.engine._detect_single) as spy:
+        with patch.object(sanitize.engine, "_detect_chunk_fast", wraps=sanitize.engine._detect_chunk_fast) as spy:
             detect(clean_text, policy_config=policy_b)
             assert spy.call_count > 0, "Different policy should not reuse cached chunks"
+
+    def test_prefilter_skips_clean_chunks(self, policy):
+        import sanitize.engine
+        from unittest.mock import patch
+        sanitize.engine._CLEAN_CHUNK_CACHE.clear()
+        sanitize.engine._analyzer_cache = None
+
+        clean_text = "# just a plain code comment\n" * 500
+        assert len(clean_text) > CHUNK_THRESHOLD
+
+        with patch.object(sanitize.engine, "_detect_chunk_fast", wraps=sanitize.engine._detect_chunk_fast) as spy:
+            spans, _ = detect(clean_text, policy_config=policy)
+            assert spy.call_count == 0, "Chunks with no PII/secret indicators should be skipped"
+            assert len(spans) == 0

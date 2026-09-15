@@ -116,17 +116,33 @@ def _build_analyzer(policy_config: dict) -> tuple[AnalyzerEngine, list[str]]:
     return analyzer, detectors_run
 
 
-_analyzer_cache: dict[int, tuple[AnalyzerEngine, list[str]]] | None = None
+_analyzer_cache: dict[int, tuple[AnalyzerEngine, list[str], list]] | None = None
 
 
-def _get_analyzer(policy_config: dict) -> tuple[AnalyzerEngine, list[str]]:
+def _get_pattern_recognizers(analyzer: AnalyzerEngine) -> list:
+    """Extract recognizers that work without NLP artifacts (regex/pattern-based)."""
+    recs = []
+    for rec in analyzer.registry.recognizers:
+        if hasattr(rec, "patterns") and rec.patterns:
+            recs.append(rec)
+        elif type(rec).__name__ in (
+            "PrivateKeyRecognizer",
+            "EntropyRecognizer",
+            "GlinerRecognizer",
+        ):
+            recs.append(rec)
+    return recs
+
+
+def _get_analyzer(policy_config: dict) -> tuple[AnalyzerEngine, list[str], list]:
     global _analyzer_cache
     config_id = id(policy_config)
     if _analyzer_cache is not None and config_id in _analyzer_cache:
         return _analyzer_cache[config_id]
     analyzer, detectors = _build_analyzer(policy_config)
-    _analyzer_cache = {config_id: (analyzer, detectors)}
-    return analyzer, detectors
+    pattern_recs = _get_pattern_recognizers(analyzer)
+    _analyzer_cache = {config_id: (analyzer, detectors, pattern_recs)}
+    return analyzer, detectors, pattern_recs
 
 
 _PLACEHOLDER_PATTERN = r"\[\[[A-Z_]+_\d+\]\]"
@@ -150,6 +166,22 @@ _FORMAT_PRESERVING_PATTERN = re.compile(
         r"sk_test_0+\d+",
         r"host\d+\.redacted\.internal",
         r"Project_\d+",
+    ])
+)
+
+_CHUNK_PREFILTER = re.compile(
+    "|".join([
+        r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+        r"(?<!\d)(?:10|172|192)\.\d{1,3}\.\d{1,3}\.\d{1,3}(?!\d)",
+        r"(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}",
+        r"-----BEGIN",
+        r"gh[pousr]_[A-Za-z0-9_]{20,}",
+        r"eyJ[A-Za-z0-9_-]{10,}\.eyJ",
+        r"(?:postgres|mysql|mongodb|redis|amqp)://\S+:\S+@",
+        r"(?:password|passwd|secret|token|api_key|apikey|api-key|secret_access_key)\s*[=:]",
+        r"sk_(?:live|test)_[A-Za-z0-9]{20,}",
+        r"xox[bpoas]-",
+        r"sk-ant-",
     ])
 )
 
@@ -199,6 +231,58 @@ def _policy_fingerprint(policy_config: dict) -> str:
         ).hexdigest()[:16]
     except Exception:
         return ""
+
+
+def _detect_chunk_fast(
+    text: str,
+    pattern_recs: list,
+    allow_list: list[str],
+) -> list[Span]:
+    """Fast chunk detection: run regex recognizers directly, bypassing spaCy NLP."""
+    raw_results = []
+    for rec in pattern_recs:
+        try:
+            raw_results.extend(
+                rec.analyze(text=text, entities=rec.supported_entities, nlp_artifacts=None)
+            )
+        except Exception:
+            continue
+
+    fp_spans = [(m.start(), m.end()) for m in _FORMAT_PRESERVING_PATTERN.finditer(text)]
+    ph_spans = [(m.start(), m.end()) for m in re.finditer(_PLACEHOLDER_PATTERN, text)]
+    safe_spans = ph_spans + fp_spans
+
+    spans: list[Span] = []
+    for r in raw_results:
+        if r.score < 0.3:
+            continue
+        overlaps_safe = any(r.start < se and r.end > ss for ss, se in safe_spans)
+        if overlaps_safe:
+            continue
+        matched = text[r.start : r.end]
+        if matched in allow_list:
+            continue
+
+        rec_name = ""
+        if r.recognition_metadata:
+            rec_name = r.recognition_metadata.get("recognizer_name", "")
+        detector = "presidio"
+        if "gitleaks" in rec_name.lower() or "private" in rec_name.lower():
+            detector = "regex:gitleaks"
+        elif "entropy" in rec_name.lower():
+            detector = "entropy"
+        elif "gliner" in rec_name.lower():
+            detector = "gliner"
+
+        spans.append(Span(
+            start=r.start,
+            end=r.end,
+            type=r.entity_type,
+            score=round(r.score, 4),
+            detector=detector,
+        ))
+
+    return spans
 
 
 def _detect_single(
@@ -274,7 +358,7 @@ def detect(
         policy_config = load_policy()
 
     start_time = time.monotonic()
-    analyzer, detectors_run = _get_analyzer(policy_config)
+    analyzer, detectors_run, pattern_recs = _get_analyzer(policy_config)
     allow_list = policy_config.get("allow", [])
 
     if len(text) <= CHUNK_THRESHOLD:
@@ -284,10 +368,12 @@ def detect(
         policy_fp = _policy_fingerprint(policy_config)
         chunks = _chunk_text(text)
         for offset, chunk in chunks:
+            if not _CHUNK_PREFILTER.search(chunk):
+                continue
             h = _chunk_hash(chunk, policy_fp)
             if h in _CLEAN_CHUNK_CACHE:
                 continue
-            chunk_spans = _detect_single(chunk, analyzer, allow_list)
+            chunk_spans = _detect_chunk_fast(chunk, pattern_recs, allow_list)
             if not chunk_spans:
                 if len(_CLEAN_CHUNK_CACHE) < CLEAN_CACHE_MAX:
                     _CLEAN_CHUNK_CACHE[h] = True
