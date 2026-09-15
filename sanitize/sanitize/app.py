@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from . import engine
 from .policy import load_policy
 
-app = FastAPI(title="scrubd", version="0.1.0")
+app = FastAPI(title="sanitize", version="0.1.0")
 
 _policy_config: dict | None = None
 _policy_version: str = date.today().isoformat() + ".1"

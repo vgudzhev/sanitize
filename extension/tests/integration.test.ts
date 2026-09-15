@@ -59,11 +59,11 @@ vi.mock("../src/client.js", () => {
     }
   }
   return {
-    ScrubdClient: MockClient,
-    ScrubdUnavailableError: class extends Error {
+    SanitizeClient: MockClient,
+    SanitizeUnavailableError: class extends Error {
       constructor() {
-        super("scrubd is unavailable");
-        this.name = "ScrubdUnavailableError";
+        super("sanitize is unavailable");
+        this.name = "SanitizeUnavailableError";
       }
     },
   };
@@ -71,7 +71,7 @@ vi.mock("../src/client.js", () => {
 
 vi.mock("../src/config.js", () => ({
   loadConfig: () => ({
-    scrubd: { url: "http://localhost:7411", timeout_ms: 4000 },
+    sanitize: { url: "http://localhost:7411", timeout_ms: 4000 },
     deny_paths: [],
   }),
 }));
@@ -270,17 +270,17 @@ describe("§6 acceptance: end-to-end scrub pipeline", () => {
     expect(displayed).toContain(AWS_KEY);
   });
 
-  test("fail-closed: scrubd unavailable blocks input", async () => {
+  test("fail-closed: sanitize unavailable blocks input", async () => {
     // Re-import with failing client
     vi.resetModules();
     class FailClosedError extends Error {
       constructor() {
-        super("scrubd is unavailable");
-        this.name = "ScrubdUnavailableError";
+        super("sanitize is unavailable");
+        this.name = "SanitizeUnavailableError";
       }
     }
     vi.doMock("../src/client.js", () => ({
-      ScrubdClient: class {
+      SanitizeClient: class {
         async detect() {
           throw new FailClosedError();
         }
@@ -288,11 +288,11 @@ describe("§6 acceptance: end-to-end scrub pipeline", () => {
           return false;
         }
       },
-      ScrubdUnavailableError: FailClosedError,
+      SanitizeUnavailableError: FailClosedError,
     }));
     vi.doMock("../src/config.js", () => ({
       loadConfig: () => ({
-        scrubd: { url: "http://localhost:7411", timeout_ms: 4000 },
+        sanitize: { url: "http://localhost:7411", timeout_ms: 4000 },
         deny_paths: [],
       }),
     }));

@@ -6,11 +6,11 @@ import type {
 } from "./types.js";
 import { Vault } from "./vault.js";
 import { substitute } from "./substitute.js";
-import { ScrubdClient, ScrubdUnavailableError } from "./client.js";
+import { SanitizeClient, SanitizeUnavailableError } from "./client.js";
 import { verifyEgress } from "./egress.js";
 import { isDeniedPath } from "./denylist.js";
 import { loadConfig } from "./config.js";
-import { registerScrubCommand } from "./ui.js";
+import { registerSanitizeCommand } from "./ui.js";
 
 function extractPathFromToolCall(event: ToolCallEvent): string | null {
   const input = event.input;
@@ -53,20 +53,20 @@ function rehydrateToolInput(
 const extension = (api: ExtensionAPI) => {
   const config = loadConfig(process.cwd(), false);
   const vault = new Vault();
-  const client = new ScrubdClient(config.scrubd.url, config.scrubd.timeout_ms);
+  const client = new SanitizeClient(config.sanitize.url, config.sanitize.timeout_ms);
   const home = homedir();
 
   api.on("session_start", async (_event, ctx) => {
     const healthy = await client.health();
     if (!healthy) {
       ctx.ui.notify(
-        "scrubd is not reachable — all requests will be blocked (fail-closed)",
+        "sanitize is not reachable — all requests will be blocked (fail-closed)",
         "warning",
       );
     }
     ctx.ui.setStatus(
-      "scrub",
-      `scrub: on · ${vault.getRedactedCount()} redacted`,
+      "sanitize",
+      `sanitize: on · ${vault.getRedactedCount()} redacted`,
     );
   });
 
@@ -79,13 +79,13 @@ const extension = (api: ExtensionAPI) => {
       if (result.spans.length === 0) return { action: "continue" as const };
       const scrubbed = substitute(event.text, result.spans, vault);
       ctx.ui.setStatus(
-        "scrub",
-        `scrub: on · ${vault.getRedactedCount()} redacted`,
+        "sanitize",
+        `sanitize: on · ${vault.getRedactedCount()} redacted`,
       );
       return { action: "transform" as const, text: scrubbed };
     } catch (e) {
-      if (e instanceof ScrubdUnavailableError) {
-        ctx.ui.notify("scrubd unavailable — input withheld (fail-closed)", "error");
+      if (e instanceof SanitizeUnavailableError) {
+        ctx.ui.notify("sanitize unavailable — input withheld (fail-closed)", "error");
         return {
           action: "transform" as const,
           text: "[[SCRUBBER_UNAVAILABLE: content withheld]]",
@@ -123,14 +123,14 @@ const extension = (api: ExtensionAPI) => {
         }),
       );
       ctx.ui.setStatus(
-        "scrub",
-        `scrub: on · ${vault.getRedactedCount()} redacted`,
+        "sanitize",
+        `sanitize: on · ${vault.getRedactedCount()} redacted`,
       );
       return { content: newContent };
     } catch (e) {
-      if (e instanceof ScrubdUnavailableError) {
+      if (e instanceof SanitizeUnavailableError) {
         ctx.ui.notify(
-          "scrubd unavailable — tool result withheld (fail-closed)",
+          "sanitize unavailable — tool result withheld (fail-closed)",
           "error",
         );
         return {
@@ -162,7 +162,7 @@ const extension = (api: ExtensionAPI) => {
     return vault.rehydrate(markdown);
   });
 
-  registerScrubCommand(api, vault, client);
+  registerSanitizeCommand(api, vault, client);
 
   api.on("session_shutdown", () => {
     vault.clear();

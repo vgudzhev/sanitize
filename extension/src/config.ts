@@ -1,12 +1,12 @@
 export interface ScrubConfig {
-  scrubd: { url: string; timeout_ms: number };
+  sanitize: { url: string; timeout_ms: number };
   placeholders: { open: string; close: string };
   deny_paths: string[];
   allow: string[];
 }
 
 const DEFAULTS: ScrubConfig = {
-  scrubd: {
+  sanitize: {
     url: "http://127.0.0.1:7411",
     timeout_ms: 4000,
   },

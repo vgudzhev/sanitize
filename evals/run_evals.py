@@ -1,4 +1,4 @@
-"""Eval runner: measure recall and precision of scrubd detection.
+"""Eval runner: measure recall and precision of sanitize detection.
 
 Recall rule: a planted item is "caught" if any returned span fully contains the
 planted secret value (character-level containment, not exact match).
@@ -16,10 +16,10 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scrubd"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "sanitize"))
 
-from scrubd.engine import detect
-from scrubd.policy import load_policy
+from sanitize.engine import detect
+from sanitize.policy import load_policy
 
 
 CORPUS_DIR = os.path.join(os.path.dirname(__file__), "corpus")

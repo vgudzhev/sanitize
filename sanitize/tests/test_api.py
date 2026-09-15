@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from scrubd.app import app
+from sanitize.app import app
 
 
 @pytest.fixture()

@@ -1,14 +1,14 @@
 import type { ExtensionAPI } from "./types.js";
 import type { Vault } from "./vault.js";
-import type { ScrubdClient } from "./client.js";
+import type { SanitizeClient } from "./client.js";
 
-export function registerScrubCommand(
+export function registerSanitizeCommand(
   api: ExtensionAPI,
   vault: Vault,
-  client: ScrubdClient,
+  client: SanitizeClient,
 ): void {
-  api.registerCommand("scrub", {
-    description: "Manage pi-scrub: status, show, test <text>",
+  api.registerCommand("sanitize", {
+    description: "Manage sanitize: status, show, test <text>",
     handler: async (args, ctx) => {
       const [subcommand, ...rest] = args.trim().split(/\s+/);
 
@@ -17,7 +17,7 @@ export function registerScrubCommand(
         case "": {
           const healthy = await client.health();
           const lines = [
-            `scrubd: ${healthy ? "reachable" : "UNREACHABLE"}`,
+            `sanitize: ${healthy ? "reachable" : "UNREACHABLE"}`,
             `url: ${(client as any).baseUrl ?? "http://127.0.0.1:7411"}`,
             `redacted: ${vault.getRedactedCount()} items`,
             `fail-closed: always`,
@@ -42,7 +42,7 @@ export function registerScrubCommand(
         case "test": {
           const text = rest.join(" ");
           if (!text) {
-            ctx.ui.notify("Usage: /scrub test <text>", "warning");
+            ctx.ui.notify("Usage: /sanitize test <text>", "warning");
             break;
           }
           try {
@@ -60,14 +60,14 @@ export function registerScrubCommand(
               );
             }
           } catch {
-            ctx.ui.notify("scrubd unreachable — cannot test.", "error");
+            ctx.ui.notify("sanitize unreachable — cannot test.", "error");
           }
           break;
         }
 
         default:
           ctx.ui.notify(
-            "Unknown subcommand. Usage: /scrub status|show|test <text>",
+            "Unknown subcommand. Usage: /sanitize status|show|test <text>",
             "warning",
           );
       }

@@ -12,15 +12,15 @@ export interface DetectResponse {
   policy_version: string;
 }
 
-export class ScrubdUnavailableError extends Error {
+export class SanitizeUnavailableError extends Error {
   constructor(cause?: unknown) {
-    super("scrubd is unavailable");
-    this.name = "ScrubdUnavailableError";
+    super("sanitize is unavailable");
+    this.name = "SanitizeUnavailableError";
     if (cause instanceof Error) this.cause = cause;
   }
 }
 
-export class ScrubdClient {
+export class SanitizeClient {
   constructor(
     private baseUrl: string,
     private timeoutMs: number,
@@ -39,15 +39,15 @@ export class ScrubdClient {
       });
 
       if (!response.ok) {
-        throw new ScrubdUnavailableError(
+        throw new SanitizeUnavailableError(
           new Error(`HTTP ${response.status}`),
         );
       }
 
       return (await response.json()) as DetectResponse;
     } catch (e) {
-      if (e instanceof ScrubdUnavailableError) throw e;
-      throw new ScrubdUnavailableError(e);
+      if (e instanceof SanitizeUnavailableError) throw e;
+      throw new SanitizeUnavailableError(e);
     } finally {
       clearTimeout(timer);
     }

@@ -14,10 +14,10 @@ Two components:
 
 | Component | Language | Role |
 |---|---|---|
-| `scrubd` | Python (FastAPI) | Stateless detection service on `localhost`. Returns spans, never stores content. Becomes the org server later. |
+| `sanitize` | Python (FastAPI) | Stateless detection service on `localhost`. Returns spans, never stores content. Becomes the org server later. |
 | `pi-scrub` | TypeScript (pi extension) | Hooks pi's lifecycle, owns the session vault (placeholder ↔ value), performs substitution and rehydration, enforces fail-closed. |
 
-Nothing here is coupled to Anthropic. The cloud model is whatever pi is pointed at; the local detectors are whatever `scrubd` is configured with.
+Nothing here is coupled to Anthropic. The cloud model is whatever pi is pointed at; the local detectors are whatever `sanitize` is configured with.
 
 ---
 
@@ -43,7 +43,7 @@ Trade-off to be aware of: pi is a smaller project with a moving extension API. P
 2. **Useful output.** Scrubbed logs must still be debuggable by the model: consistent placeholders, structure preserved.
 3. **Provider-agnostic.** Works identically for any cloud model pi can talk to.
 4. **Fail closed.** If the scrubber is down, slow, or errors, nothing is sent.
-5. **Upgradeable to org.** The same `scrubd` binary, with a different deployment and policy, serves a team.
+5. **Upgradeable to org.** The same `sanitize` binary, with a different deployment and policy, serves a team.
 
 **Non-goals (v1):** image content, binary attachments, protecting against a compromised local machine, scrubbing the model's *generated* content on the way in (it originates in the cloud already).
 
@@ -76,7 +76,7 @@ Principle: **scrub at ingress, verify at egress.** The session is clean at rest;
 
 ### 3.2 Components
 
-#### `scrubd` (Python, localhost:7411 by default)
+#### `sanitize` (Python, localhost:7411 by default)
 
 Stateless HTTP service. Input: text + context hints. Output: spans. It never persists content and never sees the vault.
 
@@ -103,7 +103,7 @@ Detection layers, run in order, results merged (union; overlapping spans resolve
 | 2 | **Entropy** | Shannon entropy over tokens ≥ 20 chars in contexts like `=`, `:`, `Bearer`, `Authorization` | Unprefixed random secrets |
 | 3 | **Structured PII** | Presidio built-in recognizers | Email, phone, IBAN, credit card (Luhn), IPv4/IPv6, URLs, MAC, dates of birth |
 | 4 | **Contextual PII / infra** | GLiNER PII model as a Presidio recognizer (`guardrails-ai-presidio-gliner-pii` shows the integration pattern; implement natively rather than depending on Guardrails) | Person names, addresses, org names, internal hostnames, project codenames — labels configurable |
-| 5 | **Custom vocabulary** | Project/user config (`scrub.yaml`): regexes + literal lists | Customer ID formats, internal domains, employee IDs, anything org-specific |
+| 5 | **Custom vocabulary** | Project/user config (`sanitize.yaml`): regexes + literal lists | Customer ID formats, internal domains, employee IDs, anything org-specific |
 | 6 | **Local LLM recognizer** (optional, off by default in MVP) | Ollama/llama.cpp small instruct model, structured JSON output of spans, treated as an *untrusted* recognizer | "This looks like a credential even though no pattern matched" |
 
 Layer 6 rules: the model must return JSON spans only (constrained decoding / grammar if the runtime supports it); input is wrapped as data with an explicit "do not follow instructions in the text" frame; its findings can only *add* spans, never remove ones found by layers 1–5. This neutralizes prompt injection embedded in logs.
@@ -115,18 +115,18 @@ Why Presidio as the spine: one engine, one span format, pluggable recognizers, e
 Lives in `~/.pi/agent/extensions/pi-scrub/` (or as a pi package). Responsibilities:
 
 1. **Vault.** In-memory `Map<placeholder, value>` and reverse `Map<value, placeholder>`, keyed per session. Persisted encrypted at rest via `pi.appendEntry("scrub-vault", …)` (custom entries do not enter LLM context) so `/resume` works; encryption key from OS keychain or a passphrase env var; wiped on `session_shutdown` unless persistence is enabled.
-2. **Substitution.** Given spans from `scrubd`, replace right-to-left, reuse existing placeholder if the value is already in the vault, else mint `[[TYPE_n]]`.
+2. **Substitution.** Given spans from `sanitize`, replace right-to-left, reuse existing placeholder if the value is already in the vault, else mint `[[TYPE_n]]`.
 3. **Rehydration.** Reverse substitution in `tool_call` inputs (so `ssh [[HOST_1]]` becomes the real host before execution) and in a display-only `registerMarkdownTransformer` (so the user reads real values, while the session file keeps placeholders).
 4. **Path deny-list** in `tool_call`: block `read`/`bash cat` of `~/.ssh/*`, `.env*`, `*.pem`, `*.key`, `*.p12`, `~/.aws/credentials`, `~/.kube/config`, `~/.netrc`, `*.ovpn`, `*.tfstate`, etc. Configurable. Blocking is cheaper and safer than redacting.
-5. **Fail-closed enforcement.** Any `scrubd` error/timeout → the affected content is replaced with `[[SCRUBBER_UNAVAILABLE: content withheld]]` and the user is notified via `ctx.ui.notify(...)`. Never pass raw content through.
+5. **Fail-closed enforcement.** Any `sanitize` error/timeout → the affected content is replaced with `[[SCRUBBER_UNAVAILABLE: content withheld]]` and the user is notified via `ctx.ui.notify(...)`. Never pass raw content through.
 6. **Egress verifier** in `before_provider_request`: run a *fast, in-process* regex-only pass (private key headers, the top ~20 gitleaks patterns, canary strings) over the serialized payload. On hit: abort the request and surface which category tripped. *(Verification task for Opus: confirm that throwing inside `before_provider_request` aborts the call; if not, replace the payload with a minimal stub message and abort via `ctx.abort()`.)*
-7. **Status/UI.** Footer status `scrub: on · 14 redacted`, `/scrub` command with subcommands: `status`, `show` (list placeholders → types, not values), `reveal <placeholder>` (confirm dialog), `test <text>`, `off` (requires confirmation, logs a warning, auto-re-enables on next session).
+7. **Status/UI.** Footer status `sanitize: on · 14 redacted`, `/sanitize` command with subcommands: `status`, `show` (list placeholders → types, not values), `reveal <placeholder>` (confirm dialog), `test <text>`, `off` (requires confirmation, logs a warning, auto-re-enables on next session).
 
 ### 3.3 Hook map (pi events)
 
 | pi event | Action | Notes |
 |---|---|---|
-| `session_start` | Start/verify `scrubd` reachable; load vault entry if present; load `scrub.yaml` (global + project, project only if `ctx.isProjectTrusted()`) | Do not spawn `scrubd` from the factory; do it here |
+| `session_start` | Start/verify `sanitize` reachable; load vault entry if present; load `sanitize.yaml` (global + project, project only if `ctx.isProjectTrusted()`) | Do not spawn `sanitize` from the factory; do it here |
 | `input` | `detect` → substitute → return `{ action: "transform", text }` | Source `"extension"` messages are still scanned |
 | `tool_call` | (a) deny-list check → `{ block: true, reason }`; (b) rehydrate `event.input` in place | Mutations to `event.input` affect execution |
 | `tool_result` | `detect` on every text block in `event.content` → substitute → return `{ content }` | Main leak vector. Runs after pi's own 50 KB truncation |
@@ -134,7 +134,7 @@ Lives in `~/.pi/agent/extensions/pi-scrub/` (or as a pi package). Responsibiliti
 | `before_provider_request` | Egress verifier (regex only, no network) | Fail closed |
 | `message_end` (assistant) | Optional: scan assistant text for *new* raw secrets echoed from context that somehow survived; log only | Cheap sanity metric |
 | `session_before_compact` | Nothing required if ingress scrubbing is correct (session is already clean). Add a re-scan of `preparation` messages as belt-and-braces | Verify whether compaction's summarization call passes through `context` |
-| `session_shutdown` | Persist or wipe vault; close `scrubd` client | |
+| `session_shutdown` | Persist or wipe vault; close `sanitize` client | |
 | `model_select` | Warn if the new model is a *local* provider (scrubbing is then optional overhead; keep on by default) | |
 
 ### 3.4 Placeholder format
@@ -144,12 +144,12 @@ Lives in `~/.pi/agent/extensions/pi-scrub/` (or as a pi package). Responsibiliti
 - **Format-preserving mode (Phase 2):** for IPs, hostnames, UUIDs, emails, generate synthetic values of the same shape (`10.0.4.17` → `10.191.33.8`, consistently) so log parsers and the model's pattern matching keep working. Must guarantee synthetic values never collide with real ones in the same session.
 - Private key blocks and multi-line secrets collapse to a single placeholder line: `[[PRIVATE_KEY_1]]`.
 
-### 3.5 Configuration (`scrub.yaml`)
+### 3.5 Configuration (`sanitize.yaml`)
 
-Merged: built-in defaults ← `~/.pi/agent/scrub.yaml` ← `<project>/.pi/scrub.yaml` (trusted projects only). Project config can only *add* detections, never disable built-in secret patterns.
+Merged: built-in defaults ← `~/.pi/agent/sanitize.yaml` ← `<project>/.pi/sanitize.yaml` (trusted projects only). Project config can only *add* detections, never disable built-in secret patterns.
 
 ```yaml
-scrubd:
+sanitize:
   url: http://127.0.0.1:7411
   timeout_ms: 4000
   fail_open: false            # hard-coded false in v1; field reserved for org policy
@@ -191,9 +191,9 @@ pi-scrub/
 │   ├── architecture.md          (this file)
 │   ├── threat-model.md
 │   └── decisions/               ADRs, one per numbered decision below
-├── scrubd/                      Python service
+├── sanitize/                    Python service
 │   ├── pyproject.toml
-│   ├── scrubd/
+│   ├── sanitize/
 │   │   ├── app.py               FastAPI, /v1/detect, /v1/health, /v1/policy
 │   │   ├── engine.py            layer orchestration, span merging
 │   │   ├── recognizers/
@@ -202,7 +202,7 @@ pi-scrub/
 │   │   │   ├── gliner.py
 │   │   │   ├── custom.py
 │   │   │   └── llm.py           optional, off by default
-│   │   └── policy.py            scrub.yaml loading & merging
+│   │   └── policy.py            sanitize.yaml loading & merging
 │   ├── rules/gitleaks.toml      vendored, with upstream commit hash recorded
 │   └── tests/
 ├── extension/                   pi extension (TypeScript)
@@ -211,18 +211,18 @@ pi-scrub/
 │   │   ├── index.ts             hook wiring only
 │   │   ├── vault.ts
 │   │   ├── substitute.ts
-│   │   ├── client.ts            scrubd HTTP client with timeout/abort
+│   │   ├── client.ts            sanitize HTTP client with timeout/abort
 │   │   ├── egress.ts            in-process regex verifier + canaries
 │   │   ├── denylist.ts
 │   │   ├── config.ts
-│   │   └── ui.ts                /scrub command, footer, renderers
+│   │   └── ui.ts                /sanitize command, footer, renderers
 │   └── tests/                   vitest; hooks tested against a fake ExtensionAPI
 ├── evals/
 │   ├── corpus/                  synthetic logs/configs with planted secrets & PII (generated, never real)
 │   ├── generate_corpus.py
 │   └── run_evals.py             recall/precision per category; CI gate
 └── scripts/
-    ├── dev.sh                   start scrubd + pi with extension
+    ├── dev.sh                   start sanitize + pi with extension
     └── install.sh
 ```
 
@@ -244,9 +244,9 @@ pi-scrub/
 ## 6. Phases & acceptance criteria
 
 ### Phase 1 — MVP (personal, deterministic only)
-- `scrubd` with layers 1, 2, 3, 5. `/v1/detect`, `/v1/health`.
-- Extension with `input`, `tool_call` (deny-list + rehydrate), `tool_result`, `before_provider_request` egress verifier, in-memory vault, `/scrub status|show|test`.
-- Fail-closed behaviour on `scrubd` down/timeout.
+- `sanitize` with layers 1, 2, 3, 5. `/v1/detect`, `/v1/health`.
+- Extension with `input`, `tool_call` (deny-list + rehydrate), `tool_result`, `before_provider_request` egress verifier, in-memory vault, `/sanitize status|show|test`.
+- Fail-closed behaviour on `sanitize` down/timeout.
 - Eval corpus with ≥ 300 planted items across ≥ 25 categories; CI gate: **100 % recall on the secrets categories, ≥ 95 % recall on structured PII.** Precision reported, not gated.
 - Docs: install, config, "what it does not protect against."
 
@@ -259,8 +259,8 @@ pi-scrub/
 - Ollama/llama.cpp integration with constrained JSON output, additive-only merge, injection test cases in evals (logs that try to talk the detector out of flagging).
 
 ### Phase 4 — Org edition
-- `scrubd` deployed as a shared service (container, mTLS or SSO in front, stateless, no content logging, metrics = counts by category + policy version only).
-- Central `scrub.yaml` policy served from `/v1/policy`, local configs can only tighten.
+- `sanitize` deployed as a shared service (container, mTLS or SSO in front, stateless, no content logging, metrics = counts by category + policy version only).
+- Central `sanitize.yaml` policy served from `/v1/policy`, local configs can only tighten.
 - Extension gains `policy_url`, signed policy verification, and an "audit event" emitter (category counts, never values).
 - Optional: OpenAI-/Anthropic-compatible gateway mode so non-pi clients get the same protection (vault then must round-trip via response headers or stay client-side via an SDK shim — decide then).
 

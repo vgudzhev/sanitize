@@ -4,10 +4,10 @@ Local sensitive-data scrubbing layer for the pi coding agent. Secrets and PII ar
 
 ## Install
 
-### scrubd (detection service)
+### sanitize (detection service)
 
 ```bash
-cd scrubd
+cd sanitize
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -16,7 +16,7 @@ python -m spacy download en_core_web_sm
 
 Start it:
 ```bash
-uvicorn scrubd.app:app --port 7411
+uvicorn sanitize.app:app --port 7411
 ```
 
 ### Extension (pi integration)
@@ -30,12 +30,12 @@ Link into pi (symlink into `~/.pi/agent/extensions/pi-scrub/` or configure in pi
 
 ## Configuration
 
-Configuration is loaded from built-in defaults. Future versions will support `~/.pi/agent/scrub.yaml` and per-project `.pi/scrub.yaml`.
+Configuration is loaded from built-in defaults. Future versions will support `~/.pi/agent/sanitize.yaml` and per-project `.pi/sanitize.yaml`.
 
 Key defaults:
-- scrubd URL: `http://127.0.0.1:7411`
+- sanitize URL: `http://127.0.0.1:7411`
 - Timeout: 4000ms
-- Fail-closed: always (if scrubd is unreachable, content is withheld)
+- Fail-closed: always (if sanitize is unreachable, content is withheld)
 
 ### Deny-list
 
@@ -54,9 +54,9 @@ Once installed, scrubbing is automatic. The extension hooks into pi's lifecycle:
 
 ### Commands
 
-- `/scrub status` -- show scrubber health and redaction count
-- `/scrub show` -- list all placeholders and their types (not values)
-- `/scrub test <text>` -- test detection on arbitrary text
+- `/sanitize status` -- show sanitize health and redaction count
+- `/sanitize show` -- list all placeholders and their types (not values)
+- `/sanitize test <text>` -- test detection on arbitrary text
 
 ## Detection layers
 
@@ -70,15 +70,15 @@ Once installed, scrubbing is automatic. The extension hooks into pi's lifecycle:
 ## Running tests
 
 ```bash
-# scrubd
-cd scrubd && source .venv/bin/activate
+# sanitize
+cd sanitize && source .venv/bin/activate
 pytest tests/ -v
 
 # extension
 cd extension && npm test
 
-# evals (requires scrubd venv)
-cd .. && source scrubd/.venv/bin/activate
+# evals (requires sanitize venv)
+cd .. && source sanitize/.venv/bin/activate
 python evals/generate_corpus.py
 python evals/run_evals.py
 ```

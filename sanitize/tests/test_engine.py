@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from scrubd.engine import Span, detect, merge_spans
-from scrubd.policy import load_policy
+from sanitize.engine import Span, detect, merge_spans
+from sanitize.policy import load_policy
 
 
 @pytest.fixture()
@@ -180,8 +180,8 @@ class TestCustomPatterns:
             "patterns": [{"name": "CUSTOMER_ID", "regex": r"CUST-[0-9]{8}"}],
             "literals": [],
         }
-        import scrubd.engine
-        scrubd.engine._analyzer_cache = None
+        import sanitize.engine
+        sanitize.engine._analyzer_cache = None
         text = "Customer CUST-12345678 placed an order"
         spans, _ = detect(text, policy_config=policy)
         types = {s.type for s in spans}
@@ -193,8 +193,8 @@ class TestCustomPatterns:
             "patterns": [],
             "literals": ["acme-internal.example"],
         }
-        import scrubd.engine
-        scrubd.engine._analyzer_cache = None
+        import sanitize.engine
+        sanitize.engine._analyzer_cache = None
         text = "Deploy to acme-internal.example server"
         spans, _ = detect(text, policy_config=policy)
         types = {s.type for s in spans}
