@@ -127,7 +127,7 @@ class TestSecretDetection:
         assert "JWT" in types
 
     def test_stripe_key(self, policy):
-        text = "STRIPE_KEY=sk_live_4eC39HqLyjWDarjtT1zdp7dc"
+        text = "STRIPE_KEY=sk_test_4eC39HqLyjWDarjtT1zdp7dc"
         spans, _ = detect(text, policy_config=policy)
         types = {s.type for s in spans}
         assert "STRIPE_KEY" in types
