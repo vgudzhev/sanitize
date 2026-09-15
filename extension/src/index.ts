@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { join } from "node:path";
 import type {
   ExtensionAPI,
   ToolCallEvent,
@@ -11,6 +12,7 @@ import { verifyEgress } from "./egress.js";
 import { isDeniedPath } from "./denylist.js";
 import { loadConfig } from "./config.js";
 import { registerSanitizeCommand } from "./ui.js";
+import { saveVault, loadVault, deleteVaultFile } from "./vault-persistence.js";
 
 function extractPathFromToolCall(event: ToolCallEvent): string | null {
   const input = event.input;
@@ -52,9 +54,21 @@ function rehydrateToolInput(
 
 const extension = (api: ExtensionAPI) => {
   const config = loadConfig(process.cwd(), false);
-  const vault = new Vault();
+  let vault = new Vault(config.placeholders?.format_preserving ?? false);
   const client = new SanitizeClient(config.sanitize.url, config.sanitize.timeout_ms);
   const home = homedir();
+  const vaultPath = join(home, ".sanitize", "vault.enc");
+  const vaultPassphrase = process.env.SANITIZE_VAULT_KEY ?? null;
+
+  const restoreVault = (): number => {
+    if (!vaultPassphrase) return 0;
+    const restored = loadVault(vaultPath, vaultPassphrase);
+    if (restored) {
+      vault.restoreFrom(restored);
+      return vault.getRedactedCount();
+    }
+    return 0;
+  };
 
   api.on("session_start", async (_event, ctx) => {
     const healthy = await client.health();
@@ -156,15 +170,44 @@ const extension = (api: ExtensionAPI) => {
       );
       ctx.abort();
     }
+
+    const rawValues = vault.getRawValues();
+    if (rawValues.length > 0) {
+      let leakedCount = 0;
+      for (const raw of rawValues) {
+        if (raw.length >= 8 && payloadStr.includes(raw)) {
+          leakedCount++;
+        }
+      }
+      if (leakedCount > 0) {
+        api.appendEntry("sanitize_context_rescan_fired", {
+          count: leakedCount,
+        });
+        ctx.ui.notify(
+          `Context re-scan: ${leakedCount} raw value(s) found in outgoing payload (this should never fire — please report)`,
+          "error",
+        );
+        ctx.abort();
+      }
+    }
   });
 
   api.registerMarkdownTransformer((markdown) => {
     return vault.rehydrate(markdown);
   });
 
-  registerSanitizeCommand(api, vault, client);
+  registerSanitizeCommand(api, vault, client, restoreVault);
 
   api.on("session_shutdown", () => {
+    if (vaultPassphrase && vault.getRedactedCount() > 0) {
+      try {
+        saveVault(vaultPath, vault.serialize(), vaultPassphrase);
+      } catch {
+        // Best-effort — don't crash shutdown
+      }
+    } else if (vaultPassphrase) {
+      deleteVaultFile(vaultPath);
+    }
     vault.clear();
   });
 };

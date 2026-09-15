@@ -40,6 +40,17 @@ const CHECKS: EgressCheck[] = [
   },
 ];
 
+const FORMAT_PRESERVING_SAFE: RegExp[] = [
+  /ghp_0{30,}\d+/,
+  /postgres:\/\/user\d+:pass@redacted\.example:5432\/db\d+/,
+  /sk_test_0{18,}\d+/,
+];
+
+function isFormatPreservingFake(payload: string, match: RegExpMatchArray): boolean {
+  const text = match[0];
+  return FORMAT_PRESERVING_SAFE.some((p) => p.test(text));
+}
+
 export function verifyEgress(payload: string): {
   safe: boolean;
   violations: string[];
@@ -47,7 +58,8 @@ export function verifyEgress(payload: string): {
   const violations: string[] = [];
 
   for (const check of CHECKS) {
-    if (check.pattern.test(payload)) {
+    const match = check.pattern.exec(payload);
+    if (match && !isFormatPreservingFake(payload, match)) {
       violations.push(check.name);
     }
   }

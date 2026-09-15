@@ -71,4 +71,62 @@ describe("Vault", () => {
     const result = vault.rehydrate("No placeholders here");
     expect(result).toBe("No placeholders here");
   });
+
+  describe("revealValue", () => {
+    it("returns raw value for known placeholder", () => {
+      vault.getPlaceholder("a@b.com", "EMAIL");
+      expect(vault.revealValue("[[EMAIL_1]]")).toBe("a@b.com");
+    });
+
+    it("returns (unknown) for unknown placeholder", () => {
+      expect(vault.revealValue("[[NOPE_99]]")).toBe("(unknown)");
+    });
+  });
+
+  describe("getRawValues", () => {
+    it("returns empty array when vault is empty", () => {
+      expect(vault.getRawValues()).toEqual([]);
+    });
+
+    it("returns all raw values stored in vault", () => {
+      vault.getPlaceholder("a@b.com", "EMAIL");
+      vault.getPlaceholder("AKIAIOSFODNN7EXAMPLE", "AWS_ACCESS_KEY");
+      const values = vault.getRawValues();
+      expect(values).toContain("a@b.com");
+      expect(values).toContain("AKIAIOSFODNN7EXAMPLE");
+      expect(values).toHaveLength(2);
+    });
+
+    it("does not include duplicates", () => {
+      vault.getPlaceholder("a@b.com", "EMAIL");
+      vault.getPlaceholder("a@b.com", "EMAIL");
+      expect(vault.getRawValues()).toHaveLength(1);
+    });
+  });
+
+  describe("restoreFrom", () => {
+    it("mutates vault in place so existing references see restored data", () => {
+      const ref = vault;
+      vault.restoreFrom({
+        forward: { "[[EMAIL_1]]": "a@b.com" },
+        counters: { EMAIL: 1 },
+        redactedCount: 1,
+        formatPreserving: false,
+      });
+      expect(ref.getRedactedCount()).toBe(1);
+      expect(ref.revealValue("[[EMAIL_1]]")).toBe("a@b.com");
+      expect(ref.rehydrate("Send to [[EMAIL_1]]")).toBe("Send to a@b.com");
+    });
+
+    it("continues counter numbering after restore", () => {
+      vault.restoreFrom({
+        forward: { "[[EMAIL_1]]": "a@b.com" },
+        counters: { EMAIL: 1 },
+        redactedCount: 1,
+        formatPreserving: false,
+      });
+      const p = vault.getPlaceholder("z@w.com", "EMAIL");
+      expect(p).toBe("[[EMAIL_2]]");
+    });
+  });
 });

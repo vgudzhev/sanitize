@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -11,7 +14,8 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 
 from .recognizers.custom import load_custom_recognizers
 from .recognizers.entropy import EntropyRecognizer
-from .recognizers.gitleaks import load_gitleaks_recognizers
+from .recognizers.gliner import GlinerRecognizer
+from .recognizers.gitleaks import _PRIVATE_KEY_BLOCK, load_gitleaks_recognizers
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +84,15 @@ def _build_analyzer(policy_config: dict) -> tuple[AnalyzerEngine, list[str]]:
     except Exception:
         log.warning("Could not load Presidio predefined recognizers (spaCy model missing?)", exc_info=True)
 
+    gliner_config = policy_config.get("detectors", {}).get("gliner", {})
+    gliner_labels = gliner_config.get("labels")
+    gliner_threshold = gliner_config.get("threshold", 0.5)
+    registry.add_recognizer(GlinerRecognizer(
+        labels=gliner_labels,
+        threshold=gliner_threshold,
+    ))
+    detectors_run.append("gliner")
+
     for rec in load_custom_recognizers(policy_config):
         registry.add_recognizer(rec)
     detectors_run.append("custom")
@@ -118,21 +131,82 @@ def _get_analyzer(policy_config: dict) -> tuple[AnalyzerEngine, list[str]]:
 
 _PLACEHOLDER_PATTERN = r"\[\[[A-Z_]+_\d+\]\]"
 
+_FORMAT_PRESERVING_PATTERN = re.compile(
+    "|".join([
+        r"user\d+@redacted\.example",
+        r"10\.0\.\d{1,3}\.\d{1,3}",
+        r"555-000-\d{4}",
+        r"4000-0000-0000-\d{4}",
+        r"AKIA0+\d+",
+        r"Person_\d+",
+        r"Org_\d+",
+        r"\d+ Redacted St, Anytown, XX 00000",
+        r"https://redacted\.example/path/\d+",
+        r"postgres://user\d+:pass@redacted\.example:5432/db\d+",
+        r"\[PRIVATE_KEY_\d+_REDACTED\]",
+        r"REDACTED_SECRET_\d+",
+        r"ghp_0+\d+",
+        r"eyJ_REDACTED_\d+",
+        r"sk_test_0+\d+",
+        r"host\d+\.redacted\.internal",
+        r"Project_\d+",
+    ])
+)
 
-def detect(
+CHUNK_THRESHOLD = 4096
+CHUNK_TARGET = 2048
+_CLEAN_CHUNK_CACHE: dict[str, bool] = {}
+CLEAN_CACHE_MAX = 4096
+
+
+def _chunk_text(text: str) -> list[tuple[int, str]]:
+    """Split text into chunks at line boundaries. Returns (offset, chunk) pairs."""
+    chunks: list[tuple[int, str]] = []
+    pos = 0
+    while pos < len(text):
+        end = min(pos + CHUNK_TARGET, len(text))
+        if end < len(text):
+            nl = text.rfind("\n", pos, end + 1)
+            if nl > pos:
+                end = nl + 1
+        chunks.append((pos, text[pos:end]))
+        pos = end
+    return chunks
+
+
+def _chunk_hash(chunk: str, policy_fp: str = "") -> str:
+    return hashlib.sha256((policy_fp + chunk).encode("utf-8", errors="replace")).hexdigest()
+
+
+def _prescan_blocks(text: str) -> list[Span]:
+    """Pre-scan full text for multi-line block patterns that span chunk boundaries."""
+    spans = []
+    for m in _PRIVATE_KEY_BLOCK.finditer(text):
+        spans.append(Span(
+            start=m.start(),
+            end=m.end(),
+            type="PRIVATE_KEY",
+            score=0.99,
+            detector="regex:gitleaks",
+        ))
+    return spans
+
+
+def _policy_fingerprint(policy_config: dict) -> str:
+    try:
+        return hashlib.sha256(
+            json.dumps(policy_config, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _detect_single(
     text: str,
-    hints: dict | None = None,
-    policy_config: dict | None = None,
-) -> tuple[list[Span], dict]:
-    if policy_config is None:
-        from .policy import load_policy
-        policy_config = load_policy()
-
-    start_time = time.monotonic()
-    analyzer, detectors_run = _get_analyzer(policy_config)
-
-    allow_list = policy_config.get("allow", [])
-
+    analyzer: AnalyzerEngine,
+    allow_list: list[str],
+) -> list[Span]:
+    """Run detection on a single piece of text, returning un-merged spans."""
     import re as _re
     escaped_allow = [_re.escape(a) for a in allow_list]
     try:
@@ -147,15 +221,17 @@ def detect(
         results = []
 
     placeholder_spans = [(m.start(), m.end()) for m in _re.finditer(_PLACEHOLDER_PATTERN, text)]
+    fp_spans = [(m.start(), m.end()) for m in _FORMAT_PRESERVING_PATTERN.finditer(text)]
+    safe_spans = placeholder_spans + fp_spans
 
     spans: list[Span] = []
     for r in results:
-        overlaps_placeholder = False
-        for ph_start, ph_end in placeholder_spans:
-            if r.start < ph_end and r.end > ph_start:
-                overlaps_placeholder = True
+        overlaps_safe = False
+        for s_start, s_end in safe_spans:
+            if r.start < s_end and r.end > s_start:
+                overlaps_safe = True
                 break
-        if overlaps_placeholder:
+        if overlaps_safe:
             continue
 
         matched = text[r.start : r.end]
@@ -170,6 +246,8 @@ def detect(
             detector = "regex:gitleaks"
         elif "entropy" in rec_name.lower():
             detector = "entropy"
+        elif "gliner" in rec_name.lower():
+            detector = "gliner"
         elif "custom" in rec_name.lower() or "pattern" in rec_name.lower():
             detector = "custom" if rec_name.startswith("Custom") else f"regex:{rec_name}"
 
@@ -180,6 +258,48 @@ def detect(
             score=round(r.score, 4),
             detector=detector,
         ))
+
+    return spans
+
+
+def detect(
+    text: str,
+    hints: dict | None = None,
+    policy_config: dict | None = None,
+) -> tuple[list[Span], dict]:
+    global _CLEAN_CHUNK_CACHE
+
+    if policy_config is None:
+        from .policy import load_policy
+        policy_config = load_policy()
+
+    start_time = time.monotonic()
+    analyzer, detectors_run = _get_analyzer(policy_config)
+    allow_list = policy_config.get("allow", [])
+
+    if len(text) <= CHUNK_THRESHOLD:
+        spans = _detect_single(text, analyzer, allow_list)
+    else:
+        spans = _prescan_blocks(text)
+        policy_fp = _policy_fingerprint(policy_config)
+        chunks = _chunk_text(text)
+        for offset, chunk in chunks:
+            h = _chunk_hash(chunk, policy_fp)
+            if h in _CLEAN_CHUNK_CACHE:
+                continue
+            chunk_spans = _detect_single(chunk, analyzer, allow_list)
+            if not chunk_spans:
+                if len(_CLEAN_CHUNK_CACHE) < CLEAN_CACHE_MAX:
+                    _CLEAN_CHUNK_CACHE[h] = True
+            else:
+                for s in chunk_spans:
+                    spans.append(Span(
+                        start=s.start + offset,
+                        end=s.end + offset,
+                        type=s.type,
+                        score=s.score,
+                        detector=s.detector,
+                    ))
 
     merged = merge_spans(spans)
     elapsed_ms = round((time.monotonic() - start_time) * 1000)

@@ -6,9 +6,10 @@ export function registerSanitizeCommand(
   api: ExtensionAPI,
   vault: Vault,
   client: SanitizeClient,
+  restoreVault?: () => number,
 ): void {
   api.registerCommand("sanitize", {
-    description: "Manage sanitize: status, show, test <text>",
+    description: "Manage sanitize: status, show, test <text>, reveal, resume",
     handler: async (args, ctx) => {
       const [subcommand, ...rest] = args.trim().split(/\s+/);
 
@@ -65,9 +66,64 @@ export function registerSanitizeCommand(
           break;
         }
 
+        case "reveal": {
+          const placeholders = vault.listPlaceholders();
+          if (placeholders.length === 0) {
+            ctx.ui.notify("No placeholders to reveal.", "info");
+            break;
+          }
+          const confirmed = await ctx.ui.confirm(
+            "Reveal sensitive values?",
+            `This will display ${placeholders.length} redacted value(s) in plain text. Proceed?`,
+          );
+          if (!confirmed) {
+            ctx.ui.notify("Reveal cancelled.", "info");
+            break;
+          }
+          const target = rest.join(" ").trim();
+          const toReveal = target
+            ? placeholders.filter(
+                (p) => p.placeholder === target || p.type === target,
+              )
+            : placeholders;
+          if (toReveal.length === 0) {
+            ctx.ui.notify(`No placeholders matching "${target}".`, "warning");
+            break;
+          }
+          const lines = toReveal.map(
+            (p) => `${p.placeholder} → ${vault.revealValue(p.placeholder)}`,
+          );
+          ctx.ui.notify(lines.join("\n"), "info");
+          break;
+        }
+
+        case "resume": {
+          if (!restoreVault) {
+            ctx.ui.notify(
+              "Vault persistence not configured. Set SANITIZE_VAULT_KEY env var.",
+              "warning",
+            );
+            break;
+          }
+          const count = restoreVault();
+          if (count > 0) {
+            ctx.ui.notify(
+              `Vault restored: ${count} redacted item(s) from previous session.`,
+              "info",
+            );
+          } else {
+            ctx.ui.notify("No saved vault found.", "info");
+          }
+          ctx.ui.setStatus(
+            "sanitize",
+            `sanitize: on · ${vault.getRedactedCount()} redacted`,
+          );
+          break;
+        }
+
         default:
           ctx.ui.notify(
-            "Unknown subcommand. Usage: /sanitize status|show|test <text>",
+            "Unknown subcommand. Usage: /sanitize status|show|test|reveal|resume",
             "warning",
           );
       }

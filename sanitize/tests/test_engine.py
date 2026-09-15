@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from sanitize.engine import Span, detect, merge_spans
+from sanitize.engine import (
+    CHUNK_THRESHOLD,
+    CHUNK_TARGET,
+    CLEAN_CACHE_MAX,
+    Span,
+    _chunk_hash,
+    _chunk_text,
+    detect,
+    merge_spans,
+)
 from sanitize.policy import load_policy
 
 
@@ -310,3 +319,143 @@ class TestCleanText:
         text = "def hello():\n    print('Hello, world!')\n    return 42"
         spans, _ = detect(text, policy_config=policy)
         assert len(spans) == 0
+
+
+# ── Chunking + hash cache ──────────────────────────────────────────────
+
+
+class TestChunkText:
+    def test_small_text_single_chunk(self):
+        text = "hello\nworld\n"
+        chunks = _chunk_text(text)
+        assert len(chunks) == 1
+        assert chunks[0] == (0, text)
+
+    def test_splits_at_line_boundaries(self):
+        lines = [f"line {i}\n" for i in range(500)]
+        text = "".join(lines)
+        assert len(text) > CHUNK_TARGET
+        chunks = _chunk_text(text)
+        assert len(chunks) > 1
+        for _offset, chunk in chunks:
+            assert chunk.endswith("\n") or chunk == chunks[-1][1]
+
+    def test_reassembles_to_original(self):
+        lines = [f"line {i}: {'x' * 80}\n" for i in range(100)]
+        text = "".join(lines)
+        chunks = _chunk_text(text)
+        reassembled = "".join(chunk for _, chunk in chunks)
+        assert reassembled == text
+
+    def test_offsets_are_correct(self):
+        lines = [f"line {i}: {'y' * 60}\n" for i in range(100)]
+        text = "".join(lines)
+        chunks = _chunk_text(text)
+        for offset, chunk in chunks:
+            assert text[offset : offset + len(chunk)] == chunk
+
+
+class TestChunkHash:
+    def test_deterministic(self):
+        assert _chunk_hash("hello") == _chunk_hash("hello")
+
+    def test_different_input_different_hash(self):
+        assert _chunk_hash("hello") != _chunk_hash("world")
+
+
+class TestChunkedDetection:
+    def test_small_text_uses_direct_path(self, policy):
+        text = "aws_key = AKIAIOSFODNN7EXAMPLE"
+        assert len(text) <= CHUNK_THRESHOLD
+        spans, stats = detect(text, policy_config=policy)
+        assert len(spans) > 0
+
+    def test_large_text_with_secret_detects_at_correct_offset(self, policy):
+        import sanitize.engine
+        sanitize.engine._CLEAN_CHUNK_CACHE.clear()
+        sanitize.engine._analyzer_cache = None
+
+        padding = "# This is a harmless comment line\n" * 200
+        secret = "password=SuperSecretValue123456\n"
+        text = padding + secret + padding
+        assert len(text) > CHUNK_THRESHOLD
+
+        spans, stats = detect(text, policy_config=policy)
+        found = False
+        for s in spans:
+            matched = text[s.start : s.end]
+            if "SuperSecretValue123456" in matched:
+                found = True
+                break
+        assert found, "Secret in large text not detected with correct offset"
+
+    def test_clean_chunks_are_cached(self, policy):
+        import sanitize.engine
+        sanitize.engine._CLEAN_CHUNK_CACHE.clear()
+        sanitize.engine._analyzer_cache = None
+
+        clean_text = "# safe comment\n" * 500
+        assert len(clean_text) > CHUNK_THRESHOLD
+
+        detect(clean_text, policy_config=policy)
+        cached_before = len(sanitize.engine._CLEAN_CHUNK_CACHE)
+        assert cached_before > 0
+
+    def test_second_call_uses_cache(self, policy):
+        import sanitize.engine
+        from unittest.mock import patch
+        sanitize.engine._CLEAN_CHUNK_CACHE.clear()
+        sanitize.engine._analyzer_cache = None
+
+        clean_text = "# safe comment\n" * 500
+        assert len(clean_text) > CHUNK_THRESHOLD
+
+        detect(clean_text, policy_config=policy)
+        with patch.object(sanitize.engine, "_detect_single", wraps=sanitize.engine._detect_single) as spy:
+            detect(clean_text, policy_config=policy)
+            assert spy.call_count == 0, "Cached chunks should skip _detect_single"
+
+    def test_private_key_straddling_boundary(self, policy):
+        import sanitize.engine
+        sanitize.engine._CLEAN_CHUNK_CACHE.clear()
+        sanitize.engine._analyzer_cache = None
+
+        body = "\n".join("A" * 64 for _ in range(60))
+        text = "# pad\n" * 200 + f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\n"
+        assert len(text) > CHUNK_THRESHOLD
+
+        spans, _ = detect(text, policy_config=policy)
+        assert any(s.type == "PRIVATE_KEY" for s in spans)
+
+    def test_format_preserving_fakes_not_redetected(self, policy):
+        fakes = [
+            "email: user1@redacted.example",
+            "Server at 10.0.0.1",
+            "call 555-000-0001",
+            "card 4000-0000-0000-0001",
+            "host1.redacted.internal",
+            "https://redacted.example/path/1",
+        ]
+        for text in fakes:
+            spans, _ = detect(text, policy_config=policy)
+            assert len(spans) == 0, f"Format-preserving fake re-detected in: {text}"
+
+    def test_policy_change_invalidates_cache(self):
+        import sanitize.engine
+        from unittest.mock import patch
+        sanitize.engine._CLEAN_CHUNK_CACHE.clear()
+        sanitize.engine._analyzer_cache = None
+
+        policy_a = load_policy()
+        clean_text = "# harmless text here\n" * 500
+        detect(clean_text, policy_config=policy_a)
+        cached_a = len(sanitize.engine._CLEAN_CHUNK_CACHE)
+        assert cached_a > 0
+
+        # Same text, different policy — cache should not be reused
+        policy_b = load_policy()
+        policy_b["extra_flag"] = True
+        sanitize.engine._analyzer_cache = None
+        with patch.object(sanitize.engine, "_detect_single", wraps=sanitize.engine._detect_single) as spy:
+            detect(clean_text, policy_config=policy_b)
+            assert spy.call_count > 0, "Different policy should not reuse cached chunks"

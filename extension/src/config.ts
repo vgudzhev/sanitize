@@ -1,6 +1,6 @@
 export interface ScrubConfig {
   sanitize: { url: string; timeout_ms: number };
-  placeholders: { open: string; close: string };
+  placeholders: { open: string; close: string; format_preserving: boolean };
   deny_paths: string[];
   allow: string[];
 }
@@ -10,7 +10,7 @@ const DEFAULTS: ScrubConfig = {
     url: "http://127.0.0.1:7411",
     timeout_ms: 4000,
   },
-  placeholders: { open: "[[", close: "]]" },
+  placeholders: { open: "[[", close: "]]", format_preserving: false },
   deny_paths: [
     "~/.ssh/**",
     "**/.env*",
