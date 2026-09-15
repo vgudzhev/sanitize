@@ -63,7 +63,7 @@ async def detect(req: DetectRequest) -> DetectResponse:
 @app.get("/v1/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     policy = _get_policy()
-    _, detectors, _ = engine._get_analyzer(policy)
+    _, detectors, _, _ = engine._get_analyzer(policy)
     return HealthResponse(status="ok", version="0.1.0", detectors=detectors)
 
 

@@ -16,6 +16,7 @@ from .recognizers.custom import load_custom_recognizers
 from .recognizers.entropy import EntropyRecognizer
 from .recognizers.gliner import GlinerRecognizer
 from .recognizers.gitleaks import _PRIVATE_KEY_BLOCK, load_gitleaks_recognizers
+from .recognizers.llm import LlmRecognizer
 
 log = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ def _build_analyzer(policy_config: dict) -> tuple[AnalyzerEngine, list[str]]:
     return analyzer, detectors_run
 
 
-_analyzer_cache: dict[int, tuple[AnalyzerEngine, list[str], list]] | None = None
+_analyzer_cache: dict[int, tuple[AnalyzerEngine, list[str], list, LlmRecognizer | None]] | None = None
 
 
 def _get_pattern_recognizers(analyzer: AnalyzerEngine) -> list:
@@ -134,15 +135,31 @@ def _get_pattern_recognizers(analyzer: AnalyzerEngine) -> list:
     return recs
 
 
-def _get_analyzer(policy_config: dict) -> tuple[AnalyzerEngine, list[str], list]:
+def _build_llm_recognizer(policy_config: dict) -> LlmRecognizer | None:
+    llm_config = policy_config.get("detectors", {}).get("llm", {})
+    if not llm_config.get("enabled", False):
+        return None
+    return LlmRecognizer(
+        model=llm_config.get("model", "llama3.2:3b"),
+        ollama_url=llm_config.get("url", "http://localhost:11434"),
+        timeout_s=llm_config.get("timeout_s", 10),
+    )
+
+
+def _get_analyzer(
+    policy_config: dict,
+) -> tuple[AnalyzerEngine, list[str], list, LlmRecognizer | None]:
     global _analyzer_cache
     config_id = id(policy_config)
     if _analyzer_cache is not None and config_id in _analyzer_cache:
         return _analyzer_cache[config_id]
     analyzer, detectors = _build_analyzer(policy_config)
     pattern_recs = _get_pattern_recognizers(analyzer)
-    _analyzer_cache = {config_id: (analyzer, detectors, pattern_recs)}
-    return analyzer, detectors, pattern_recs
+    llm_rec = _build_llm_recognizer(policy_config)
+    if llm_rec is not None:
+        detectors.append("llm")
+    _analyzer_cache = {config_id: (analyzer, detectors, pattern_recs, llm_rec)}
+    return analyzer, detectors, pattern_recs, llm_rec
 
 
 _PLACEHOLDER_PATTERN = r"\[\[[A-Z_]+_\d+\]\]"
@@ -358,7 +375,7 @@ def detect(
         policy_config = load_policy()
 
     start_time = time.monotonic()
-    analyzer, detectors_run, pattern_recs = _get_analyzer(policy_config)
+    analyzer, detectors_run, pattern_recs, llm_rec = _get_analyzer(policy_config)
     allow_list = policy_config.get("allow", [])
 
     if len(text) <= CHUNK_THRESHOLD:
@@ -388,6 +405,18 @@ def detect(
                     ))
 
     merged = merge_spans(spans)
+
+    if llm_rec is not None and len(text) <= CHUNK_THRESHOLD:
+        llm_results = llm_rec.analyze(text, entities=llm_rec.supported_entities)
+        additive = [
+            Span(start=r.start, end=r.end, type=r.entity_type,
+                 score=round(r.score, 4), detector="llm")
+            for r in llm_results
+            if not any(r.start < m.end and r.end > m.start for m in merged)
+        ]
+        if additive:
+            merged = sorted(merged + merge_spans(additive), key=lambda s: s.start)
+
     elapsed_ms = round((time.monotonic() - start_time) * 1000)
 
     stats = {
