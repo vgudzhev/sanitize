@@ -4,6 +4,8 @@ Local sensitive-data scrubbing layer for coding agents. Every byte that leaves t
 
 Provider-agnostic: works with any LLM backend (Anthropic, OpenAI, Google, Ollama, etc.) via the pi agent harness.
 
+**[Quick Start](docs/quickstart.md)** — get running in 5 minutes | **[Usage Guide](docs/usage.md)** — full reference | **[Architecture](docs/architecture.md)** — how it works
+
 ## Architecture
 
 Two components:
