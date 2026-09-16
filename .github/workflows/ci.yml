@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  extension:
+    name: Extension tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      - run: npm ci
+        working-directory: extension
+      - run: npx tsc --noEmit
+        working-directory: extension
+      - run: npm test
+        working-directory: extension
+
+  sanitize:
+    name: Sanitize tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+        working-directory: sanitize
+      - run: python -m pytest tests/ -x -q
+        working-directory: sanitize
+
+  evals:
+    name: Eval corpus
+    runs-on: ubuntu-latest
+    needs: sanitize
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+        working-directory: sanitize
+      - run: python -m spacy download en_core_web_sm
+      - run: |
+          if [ -f evals/run_evals.py ]; then
+            python evals/run_evals.py
+          else
+            echo "Eval runner not yet implemented — skipping"
+          fi
