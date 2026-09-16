@@ -540,6 +540,33 @@ footer p {
 }
 footer a { color: var(--text-muted); }
 
+/* ---- RUNTIME TABS ---- */
+.runtime-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+.runtime-tab {
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.runtime-tab:hover { color: var(--text-muted); border-color: var(--text-dim); }
+.runtime-tab.active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--border-accent);
+}
+.runtime-panel { display: none; }
+.runtime-panel.active { display: block; }
+
 /* ---- MOBILE ---- */
 @media (max-width: 600px) {
   .nav-links { display: none; }
@@ -575,9 +602,10 @@ footer a { color: var(--text-muted); }
   <div class="container">
     <h1>Your secrets <em>never leave</em><br>your machine.</h1>
     <p class="hero-sub">
-      pi-scrub is a local scrubbing layer for coding agents. It intercepts every request
-      to cloud LLMs and replaces secrets and PII with stable placeholders &mdash;
-      so the model can still reason about your code, but your credentials never hit the wire.
+      pi-scrub is a local scrubbing layer for Claude Code, pi, and any LLM client.
+      It intercepts every request to cloud LLMs and replaces secrets and PII with stable
+      placeholders &mdash; so the model can still reason about your code, but your
+      credentials never hit the wire.
     </p>
     <div class="hero-actions">
       <a href="#get-started" class="btn btn-primary">Get started</a>
@@ -590,7 +618,7 @@ footer a { color: var(--text-muted); }
           <div class="demo-dot"></div>
           <div class="demo-dot"></div>
           <div class="demo-dot"></div>
-          <span class="demo-title">pi session</span>
+          <span class="demo-title">scrubbed session</span>
         </div>
         <div class="demo-body">
 <div class="demo-section">
@@ -1017,16 +1045,27 @@ curl http://localhost:7411/v1/health</div>
         <div class="step-num">3</div>
         <div class="step-content">
           <h3>Install the extension</h3>
-          <div class="step-code">cd ../extension && npm install
+          <div class="runtime-tabs">
+            <button class="runtime-tab active" onclick="switchRuntime('claude')">Claude Code</button>
+            <button class="runtime-tab" onclick="switchRuntime('pi')">pi</button>
+          </div>
+          <div id="install-claude" class="runtime-panel active">
+            <div class="step-code">cd ../extension && npm install
+mkdir -p ~/.claude/extensions/pi-scrub
+ln -s "$(pwd)/src/index.ts" ~/.claude/extensions/pi-scrub/</div>
+          </div>
+          <div id="install-pi" class="runtime-panel">
+            <div class="step-code">cd ../extension && npm install
 mkdir -p ~/.pi/agent/extensions/pi-scrub
 ln -s "$(pwd)/src/index.ts" ~/.pi/agent/extensions/pi-scrub/</div>
+          </div>
         </div>
       </div>
 
       <div class="step">
         <div class="step-num">4</div>
         <div class="step-content">
-          <h3>Use pi as usual</h3>
+          <h3>Start your agent as usual</h3>
           <p>Everything is automatic. Paste something with a secret and see it scrubbed.</p>
           <div class="step-code"><span class="dim"># You type:</span>
 My AWS key is AKIAIOSFODNN7EXAMPLE and password is hunter2
@@ -1078,7 +1117,7 @@ My AWS key is [[AWS_ACCESS_KEY_1]] and password is [[GENERIC_SECRET_1]]</div>
       </div>
 
       <div class="code-block">
-        <div class="code-header"><span>~/.pi/agent/sanitize.yaml</span></div>
+        <div class="code-header"><span id="config-path">~/.claude/sanitize.yaml</span></div>
         <div class="code-body"><span class="dim"># Custom detection patterns</span>
 custom:
   patterns:
@@ -1137,5 +1176,15 @@ allow:
   </div>
 </footer>
 
+<script>
+function switchRuntime(runtime) {
+  document.querySelectorAll('.runtime-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.runtime-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector('[onclick*="' + runtime + '"]').classList.add('active');
+  document.getElementById('install-' + runtime).classList.add('active');
+  document.getElementById('config-path').textContent =
+    runtime === 'claude' ? '~/.claude/sanitize.yaml' : '~/.pi/agent/sanitize.yaml';
+}
+</script>
 </body>
 </html>

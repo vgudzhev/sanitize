@@ -125,11 +125,15 @@ function mergeLayer(base: ScrubConfig, layer: RawYaml): ScrubConfig {
 
 export function loadConfig(cwd: string, home?: string): ScrubConfig {
   const config = structuredClone(DEFAULTS);
+  const h = home ?? homedir();
 
-  const globalPath = join(home ?? homedir(), ".pi", "agent", "sanitize.yaml");
-  const globalYaml = readYamlFile(globalPath);
-  if (globalYaml) {
-    return applyEnvOverrides(mergeLayer(config, globalYaml));
+  const candidates = [
+    join(h, ".claude", "sanitize.yaml"),
+    join(h, ".pi", "agent", "sanitize.yaml"),
+  ];
+  for (const candidate of candidates) {
+    const yaml = readYamlFile(candidate);
+    if (yaml) return applyEnvOverrides(mergeLayer(config, yaml));
   }
 
   return applyEnvOverrides(config);
@@ -138,8 +142,9 @@ export function loadConfig(cwd: string, home?: string): ScrubConfig {
 export function loadProjectArrays(
   cwd: string,
 ): { deny_paths: string[]; allow: string[] } | null {
-  const projectPath = join(cwd, ".pi", "sanitize.yaml");
-  const yaml = readYamlFile(projectPath);
+  const yaml =
+    readYamlFile(join(cwd, ".claude", "sanitize.yaml")) ??
+    readYamlFile(join(cwd, ".pi", "sanitize.yaml"));
   if (!yaml) return null;
   return {
     deny_paths: Array.isArray(yaml.deny_paths)

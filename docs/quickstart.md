@@ -6,7 +6,7 @@ Get pi-scrub running in under 5 minutes. This guide covers personal mode (single
 
 - Python 3.12+
 - Node.js 18+
-- A pi agent installation
+- Claude Code or pi agent installed
 
 ## 1. Clone and install
 
@@ -55,6 +55,13 @@ curl http://localhost:7411/v1/health
 
 ## 3. Link the extension
 
+**Claude Code:**
+```bash
+mkdir -p ~/.claude/extensions/pi-scrub
+ln -s "$(pwd)/../extension/src/index.ts" ~/.claude/extensions/pi-scrub/
+```
+
+**pi:**
 ```bash
 mkdir -p ~/.pi/agent/extensions/pi-scrub
 ln -s "$(pwd)/../extension/src/index.ts" ~/.pi/agent/extensions/pi-scrub/
@@ -62,7 +69,7 @@ ln -s "$(pwd)/../extension/src/index.ts" ~/.pi/agent/extensions/pi-scrub/
 
 ## 4. Try it
 
-Start pi as usual. Paste something with a secret:
+Start your agent (Claude Code or pi) as usual. Paste something with a secret:
 
 ```
 My AWS key is AKIAIOSFODNN7EXAMPLE and password is hunter2
@@ -88,7 +95,7 @@ Output shows each detected span with type, position, and score.
 
 ## Commands
 
-Once running inside pi:
+Once running inside your agent:
 
 | Command | What it does |
 |---------|-------------|
@@ -100,7 +107,7 @@ Once running inside pi:
 
 ## Configuration
 
-Create `~/.pi/agent/sanitize.yaml` to customize:
+Create `~/.claude/sanitize.yaml` (or `~/.pi/agent/sanitize.yaml` for pi) to customize:
 
 ```yaml
 # Add custom patterns
@@ -129,7 +136,7 @@ allow:
   - "test@example.com"
 ```
 
-Project-level overrides go in `<project>/.pi/sanitize.yaml`.
+Project-level overrides go in `<project>/.claude/sanitize.yaml` (or `<project>/.pi/sanitize.yaml`).
 
 ## Vault persistence
 
@@ -139,7 +146,7 @@ To keep placeholders across sessions:
 export SANITIZE_VAULT_KEY="your-passphrase"
 ```
 
-Then use `/sanitize resume` after restarting pi.
+Then use `/sanitize resume` after restarting your agent.
 
 ## Optional: Local LLM layer
 

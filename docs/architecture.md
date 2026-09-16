@@ -1,4 +1,4 @@
-# pi-scrub — Local Sensitive-Data Scrubbing Layer for the pi Coding Agent
+# pi-scrub — Local Sensitive-Data Scrubbing Layer for Coding Agents
 
 **Status:** Draft v0.1 (personal edition; org edition is Phase 4)
 **Audience:** implementing agent (Opus) and future planner/coder/QA/docs pipeline
@@ -15,33 +15,34 @@ Two components:
 | Component | Language | Role |
 |---|---|---|
 | `sanitize` | Python (FastAPI) | Stateless detection service on `localhost`. Returns spans, never stores content. Becomes the org server later. |
-| `pi-scrub` | TypeScript (pi extension) | Hooks pi's lifecycle, owns the session vault (placeholder ↔ value), performs substitution and rehydration, enforces fail-closed. |
+| `pi-scrub` | TypeScript (extension) | Hooks the agent's lifecycle (Claude Code or pi), owns the session vault (placeholder ↔ value), performs substitution and rehydration, enforces fail-closed. |
 
-Nothing here is coupled to Anthropic. The cloud model is whatever pi is pointed at; the local detectors are whatever `sanitize` is configured with.
+Nothing here is coupled to a single provider or harness. The extension works with both Claude Code and pi; the cloud model is whatever the agent is pointed at; the local detectors are whatever `sanitize` is configured with.
 
 ---
 
-## 1. Harness decision: pi, not Claude Code
+## 1. Supported harnesses
 
-**Recommendation: pi.** Flagging the reasoning as requested.
+pi-scrub supports two coding agent runtimes:
 
-- **Decoupling.** pi is provider-agnostic by design (Anthropic, OpenAI, Google, Mistral, Ollama, llama.cpp, OpenRouter, custom providers via `models.json` or `pi.registerProvider()`). Claude Code is an Anthropic product; routing it to other models requires proxy tricks and is not a supported path.
-- **Interception depth.** pi exposes a `context` event (rewrite the full message list before *every* LLM call) and `before_provider_request` (inspect/replace the serialized payload right before the HTTP request). Claude Code's hooks (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`) cover the ingress side but give no hook on the final outbound payload, so an egress verification step is not possible there.
-- **Session at rest.** Because pi lets us transform input and tool results *before* they are persisted, the session `.jsonl` files themselves stay scrubbed. `/share` and `/export` become safe by construction.
+- **Claude Code** — Anthropic's CLI agent. Extension installed at `~/.claude/extensions/pi-scrub/`, config at `~/.claude/sanitize.yaml`.
+- **pi** — Provider-agnostic agent with a rich extension API. Extension installed at `~/.pi/agent/extensions/pi-scrub/`, config at `~/.pi/agent/sanitize.yaml`.
 
-Trade-off to be aware of: pi is a smaller project with a moving extension API. Pin the pi version in `package.json` and re-verify hook names on upgrade. Package name at time of writing: `@earendil-works/pi-coding-agent`.
+Both runtimes expose the hooks pi-scrub needs: `input`, `tool_call`, `tool_result`, `context`, `before_provider_request`, `session_start`, `session_shutdown`, and `registerMarkdownTransformer`. The extension auto-detects which config path exists (`.claude` checked first, `.pi` as fallback).
+
+For any other LLM client, **gateway mode** (Section 5) provides the same scrubbing via a local HTTP proxy — no extension needed.
 
 ---
 
 ## 2. Threat model & goals
 
-**Threat:** any intermediary between pi and the model — routers, proxies, provider logging, breach of provider — obtains prompt/tool-result/response logs and extracts credentials and PII.
+**Threat:** any intermediary between the agent and the model — routers, proxies, provider logging, breach of provider — obtains prompt/tool-result/response logs and extracts credentials and PII.
 
 **Goals (in priority order):**
 
 1. **Recall on secrets.** An SSH key, cloud token, VPN config, DB URL with password, or JWT must never leave the machine. This is the metric we optimize; false positives are acceptable.
 2. **Useful output.** Scrubbed logs must still be debuggable by the model: consistent placeholders, structure preserved.
-3. **Provider-agnostic.** Works identically for any cloud model pi can talk to.
+3. **Provider-agnostic.** Works identically for any cloud model the agent can talk to.
 4. **Fail closed.** If the scrubber is down, slow, or errors, nothing is sent.
 5. **Upgradeable to org.** The same `sanitize` binary, with a different deployment and policy, serves a team.
 
@@ -72,7 +73,7 @@ Trade-off to be aware of: pi is a smaller project with a moving extension API. P
    with real values
 ```
 
-Principle: **scrub at ingress, verify at egress.** The session is clean at rest; `context` and `before_provider_request` exist to catch anything that slipped past ingress (e.g., a future pi feature that injects content we did not hook).
+Principle: **scrub at ingress, verify at egress.** The session is clean at rest; `context` and `before_provider_request` exist to catch anything that slipped past ingress (e.g., a future agent feature that injects content we did not hook).
 
 ### 3.2 Components
 
@@ -112,7 +113,7 @@ Why Presidio as the spine: one engine, one span format, pluggable recognizers, e
 
 #### `pi-scrub` (TypeScript extension)
 
-Lives in `~/.pi/agent/extensions/pi-scrub/` (or as a pi package). Responsibilities:
+Lives in `~/.claude/extensions/pi-scrub/` (Claude Code) or `~/.pi/agent/extensions/pi-scrub/` (pi). Responsibilities:
 
 1. **Vault.** In-memory `Map<placeholder, value>` and reverse `Map<value, placeholder>`, keyed per session. Persisted encrypted at rest via `pi.appendEntry("scrub-vault", …)` (custom entries do not enter LLM context) so `/resume` works; encryption key from OS keychain or a passphrase env var; wiped on `session_shutdown` unless persistence is enabled.
 2. **Substitution.** Given spans from `sanitize`, replace right-to-left, reuse existing placeholder if the value is already in the vault, else mint `[[TYPE_n]]`.
@@ -122,14 +123,14 @@ Lives in `~/.pi/agent/extensions/pi-scrub/` (or as a pi package). Responsibiliti
 6. **Egress verifier** in `before_provider_request`: run a *fast, in-process* regex-only pass (private key headers, the top ~20 gitleaks patterns, canary strings) over the serialized payload. On hit: abort the request and surface which category tripped. *(Verification task for Opus: confirm that throwing inside `before_provider_request` aborts the call; if not, replace the payload with a minimal stub message and abort via `ctx.abort()`.)*
 7. **Status/UI.** Footer status `sanitize: on · 14 redacted`, `/sanitize` command with subcommands: `status`, `show` (list placeholders → types, not values), `reveal <placeholder>` (confirm dialog), `test <text>`, `off` (requires confirmation, logs a warning, auto-re-enables on next session).
 
-### 3.3 Hook map (pi events)
+### 3.3 Hook map (extension events)
 
-| pi event | Action | Notes |
+| Event | Action | Notes |
 |---|---|---|
 | `session_start` | Start/verify `sanitize` reachable; load vault entry if present; load `sanitize.yaml` (global + project, project only if `ctx.isProjectTrusted()`) | Do not spawn `sanitize` from the factory; do it here |
 | `input` | `detect` → substitute → return `{ action: "transform", text }` | Source `"extension"` messages are still scanned |
 | `tool_call` | (a) deny-list check → `{ block: true, reason }`; (b) rehydrate `event.input` in place | Mutations to `event.input` affect execution |
-| `tool_result` | `detect` on every text block in `event.content` → substitute → return `{ content }` | Main leak vector. Runs after pi's own 50 KB truncation |
+| `tool_result` | `detect` on every text block in `event.content` → substitute → return `{ content }` | Main leak vector. Runs after the agent's own truncation |
 | `context` | Re-scan all message text; substitute anything found | Defense in depth; should normally find nothing — log when it does, that's a bug elsewhere |
 | `before_provider_request` | Egress verifier (regex only, no network) | Fail closed |
 | `message_end` (assistant) | Optional: scan assistant text for *new* raw secrets echoed from context that somehow survived; log only | Cheap sanity metric |
@@ -146,7 +147,7 @@ Lives in `~/.pi/agent/extensions/pi-scrub/` (or as a pi package). Responsibiliti
 
 ### 3.5 Configuration (`sanitize.yaml`)
 
-Merged: built-in defaults ← `~/.pi/agent/sanitize.yaml` ← `<project>/.pi/sanitize.yaml` (trusted projects only). Project config can only *add* detections, never disable built-in secret patterns.
+Merged: built-in defaults ← global config ← project config (trusted projects only). Global config is loaded from `~/.claude/sanitize.yaml` or `~/.pi/agent/sanitize.yaml` (first found). Project config from `<project>/.claude/sanitize.yaml` or `<project>/.pi/sanitize.yaml`. Project config can only *add* detections, never disable built-in secret patterns.
 
 ```yaml
 sanitize:
@@ -205,8 +206,8 @@ pi-scrub/
 │   │   └── policy.py            sanitize.yaml loading & merging
 │   ├── rules/gitleaks.toml      vendored, with upstream commit hash recorded
 │   └── tests/
-├── extension/                   pi extension (TypeScript)
-│   ├── package.json             pins pi version; "pi": { "extensions": ["./src/index.ts"] }
+├── extension/                   Claude Code / pi extension (TypeScript)
+│   ├── package.json             extension entry point: src/index.ts
 │   ├── src/
 │   │   ├── index.ts             hook wiring only
 │   │   ├── vault.ts
@@ -222,7 +223,7 @@ pi-scrub/
 │   ├── generate_corpus.py
 │   └── run_evals.py             recall/precision per category; CI gate
 └── scripts/
-    ├── dev.sh                   start sanitize + pi with extension
+    ├── dev.sh                   start sanitize + agent with extension
     └── install.sh
 ```
 
@@ -278,7 +279,7 @@ pi-scrub/
 
 ## 8. What this does not do (say it in the README)
 
-- Does not protect against a compromised local machine or a malicious pi extension (extensions run with full permissions).
+- Does not protect against a compromised local machine or a malicious extension (extensions run with full permissions).
 - Does not scrub images or binary attachments.
 - Does not make anything "anonymous" in the GDPR sense — placeholders are pseudonymization and are reversible by the local vault.
 - Cannot guarantee zero misses on free-text secrets with no structure; that is exactly why layers 4 and 6 exist and why recall evals are a CI gate rather than a one-off.

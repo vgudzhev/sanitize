@@ -54,8 +54,8 @@ describe("loadConfig — YAML loading", () => {
     expect(b.deny_paths).not.toContain("LEAKED");
   });
 
-  it("loads global config from ~/.pi/agent/sanitize.yaml", () => {
-    const globalDir = join(tmpHome, ".pi", "agent");
+  it("loads global config from ~/.claude/sanitize.yaml", () => {
+    const globalDir = join(tmpHome, ".claude");
     mkdirSync(globalDir, { recursive: true });
     writeFileSync(
       join(globalDir, "sanitize.yaml"),
@@ -65,6 +65,36 @@ describe("loadConfig — YAML loading", () => {
     const config = loadConfig(tmpProject, tmpHome);
     expect(config.sanitize.url).toBe("http://custom-host:9999");
     expect(config.sanitize.timeout_ms).toBe(8000);
+  });
+
+  it("falls back to ~/.pi/agent/sanitize.yaml when ~/.claude/ absent", () => {
+    const globalDir = join(tmpHome, ".pi", "agent");
+    mkdirSync(globalDir, { recursive: true });
+    writeFileSync(
+      join(globalDir, "sanitize.yaml"),
+      "sanitize:\n  url: http://pi-host:7411\n",
+    );
+
+    const config = loadConfig(tmpProject, tmpHome);
+    expect(config.sanitize.url).toBe("http://pi-host:7411");
+  });
+
+  it("prefers ~/.claude/ over ~/.pi/agent/ when both exist", () => {
+    const claudeDir = join(tmpHome, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(
+      join(claudeDir, "sanitize.yaml"),
+      "sanitize:\n  url: http://claude-host:7411\n",
+    );
+    const piDir = join(tmpHome, ".pi", "agent");
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(
+      join(piDir, "sanitize.yaml"),
+      "sanitize:\n  url: http://pi-host:7411\n",
+    );
+
+    const config = loadConfig(tmpProject, tmpHome);
+    expect(config.sanitize.url).toBe("http://claude-host:7411");
   });
 
   it("merges deny_paths additively from global config", () => {
@@ -159,8 +189,8 @@ describe("loadProjectArrays", () => {
     expect(loadProjectArrays(tmpProject)).toBeNull();
   });
 
-  it("returns deny_paths and allow arrays from project YAML", () => {
-    const projDir = join(tmpProject, ".pi");
+  it("returns deny_paths and allow arrays from .claude/sanitize.yaml", () => {
+    const projDir = join(tmpProject, ".claude");
     mkdirSync(projDir, { recursive: true });
     writeFileSync(
       join(projDir, "sanitize.yaml"),
@@ -171,6 +201,19 @@ describe("loadProjectArrays", () => {
     expect(arrays).not.toBeNull();
     expect(arrays!.deny_paths).toEqual(["**/secrets.json"]);
     expect(arrays!.allow).toEqual(["staging.internal"]);
+  });
+
+  it("falls back to .pi/sanitize.yaml when .claude/ absent", () => {
+    const projDir = join(tmpProject, ".pi");
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(
+      join(projDir, "sanitize.yaml"),
+      'deny_paths:\n  - "**/legacy.json"\n',
+    );
+
+    const arrays = loadProjectArrays(tmpProject);
+    expect(arrays).not.toBeNull();
+    expect(arrays!.deny_paths).toEqual(["**/legacy.json"]);
   });
 
   it("ignores scalar fields in project YAML", () => {

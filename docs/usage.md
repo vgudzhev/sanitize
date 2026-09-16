@@ -21,15 +21,21 @@ cd extension
 npm install
 ```
 
-Link into pi:
+Link into your agent:
+
+**Claude Code:**
+```bash
+mkdir -p ~/.claude/extensions/pi-scrub
+ln -s "$(pwd)/src/index.ts" ~/.claude/extensions/pi-scrub/
+```
+
+**pi:**
 ```bash
 mkdir -p ~/.pi/agent/extensions/pi-scrub
 ln -s "$(pwd)/src/index.ts" ~/.pi/agent/extensions/pi-scrub/
 ```
 
-Or add to pi's extension config.
-
-### 3. Start using pi
+### 3. Start using your agent
 
 Everything is automatic once the extension is loaded. The scrubbing pipeline:
 
@@ -64,8 +70,8 @@ The vault is encrypted with AES-256-GCM and stored at `~/.sanitize/vault.enc`.
 ### 6. Configuration
 
 Policy is loaded from built-in defaults, then merged with:
-- `~/.pi/agent/sanitize.yaml` (global, user-level)
-- `<project>/.pi/sanitize.yaml` (project-level, trusted projects only)
+- `~/.claude/sanitize.yaml` or `~/.pi/agent/sanitize.yaml` (global, user-level — first found wins)
+- `<project>/.claude/sanitize.yaml` or `<project>/.pi/sanitize.yaml` (project-level, trusted projects only)
 
 Example `sanitize.yaml`:
 ```yaml
@@ -125,7 +131,7 @@ Org mode deploys sanitize as a shared service with a central policy that local c
 ```
 ┌─────────────┐     HTTPS/mTLS      ┌──────────────────┐
 │  developer   │ ──────────────────► │  reverse proxy    │
-│  (pi + ext)  │ ◄────────────────── │  (nginx/caddy)    │
+│ (agent+ext)  │ ◄────────────────── │  (nginx/caddy)    │
 └─────────────┘                      │  terminates TLS   │
                                      │  validates OIDC   │
                                      └────────┬─────────┘
@@ -183,7 +189,7 @@ export SANITIZE_POLICY_URL="https://sanitize.corp.internal:7411"
 export SANITIZE_PUBLIC_KEY="$(cat keys/policy.pub)"
 ```
 
-Or in `~/.pi/agent/sanitize.yaml`:
+Or in `~/.claude/sanitize.yaml` (or `~/.pi/agent/sanitize.yaml`):
 ```yaml
 sanitize:
   url: https://sanitize.corp.internal:7411
@@ -266,7 +272,7 @@ curl -H "Authorization: Bearer $SANITIZE_TOKEN" \
 
 ## Gateway mode (any LLM client)
 
-Gateway mode is a local HTTP proxy that sits between any OpenAI/Anthropic SDK client and the real API. It scrubs requests and rehydrates responses, so non-pi clients get the same scrubbing protection.
+Gateway mode is a local HTTP proxy that sits between any OpenAI/Anthropic SDK client and the real API. It scrubs requests and rehydrates responses, so any LLM client gets the same scrubbing protection without the extension.
 
 **The gateway is a local sidecar** — it binds `127.0.0.1` only and is not intended for shared/org deployment. The vault lives in the gateway process memory for the lifetime of each session. This is the same trust boundary as the extension's in-memory vault.
 
