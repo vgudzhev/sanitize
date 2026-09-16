@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "scripts": {
     "build": "tsc",
@@ -12,8 +14,12 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22",
     "typescript": "^5.5",
-    "vitest": "^2.0",
-    "@types/node": "^22"
+    "vitest": "^2.0"
+  },
+  "dependencies": {
+    "js-yaml": "^5.4.2"
   }
 }

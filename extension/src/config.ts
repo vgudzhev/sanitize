@@ -1,3 +1,8 @@
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { load as yamlLoad } from "js-yaml";
+
 export interface OrgConfig {
   policy_url: string | null;
   token: string | null;
@@ -40,12 +45,133 @@ const DEFAULTS: ScrubConfig = {
   },
 };
 
-export function loadConfig(
-  _cwd: string,
-  _isProjectTrusted: boolean,
-): ScrubConfig {
-  const config = { ...DEFAULTS };
+interface RawYaml {
+  sanitize?: { url?: string; timeout_ms?: number };
+  placeholders?: { format_preserving?: boolean };
+  deny_paths?: string[];
+  allow?: string[];
+  org?: {
+    policy_url?: string;
+    token?: string;
+    audit_url?: string;
+    public_key?: string;
+  };
+}
 
+function readYamlFile(path: string): RawYaml | null {
+  if (!existsSync(path)) return null;
+  try {
+    const content = readFileSync(path, "utf-8");
+    const parsed = yamlLoad(content);
+    if (parsed === null || typeof parsed !== "object") return null;
+    return parsed as RawYaml;
+  } catch {
+    return null;
+  }
+}
+
+function mergeLayer(base: ScrubConfig, layer: RawYaml): ScrubConfig {
+  const result = { ...base };
+
+  if (layer.sanitize) {
+    result.sanitize = { ...result.sanitize };
+    if (typeof layer.sanitize.url === "string")
+      result.sanitize.url = layer.sanitize.url;
+    if (typeof layer.sanitize.timeout_ms === "number")
+      result.sanitize.timeout_ms = layer.sanitize.timeout_ms;
+  }
+
+  if (layer.placeholders) {
+    result.placeholders = { ...result.placeholders };
+    if (typeof layer.placeholders.format_preserving === "boolean")
+      result.placeholders.format_preserving =
+        layer.placeholders.format_preserving;
+  }
+
+  if (Array.isArray(layer.deny_paths)) {
+    const existing = new Set(result.deny_paths);
+    for (const p of layer.deny_paths) {
+      if (typeof p === "string" && !existing.has(p)) {
+        result.deny_paths = [...result.deny_paths, p];
+        existing.add(p);
+      }
+    }
+  }
+
+  if (Array.isArray(layer.allow)) {
+    const existing = new Set(result.allow);
+    for (const a of layer.allow) {
+      if (typeof a === "string" && !existing.has(a)) {
+        result.allow = [...result.allow, a];
+        existing.add(a);
+      }
+    }
+  }
+
+  if (layer.org) {
+    result.org = { ...result.org };
+    if (typeof layer.org.policy_url === "string")
+      result.org.policy_url = layer.org.policy_url;
+    if (typeof layer.org.token === "string")
+      result.org.token = layer.org.token;
+    if (typeof layer.org.audit_url === "string")
+      result.org.audit_url = layer.org.audit_url;
+    if (typeof layer.org.public_key === "string")
+      result.org.public_key = layer.org.public_key;
+  }
+
+  return result;
+}
+
+export function loadConfig(cwd: string, home?: string): ScrubConfig {
+  const config = structuredClone(DEFAULTS);
+
+  const globalPath = join(home ?? homedir(), ".pi", "agent", "sanitize.yaml");
+  const globalYaml = readYamlFile(globalPath);
+  if (globalYaml) {
+    return applyEnvOverrides(mergeLayer(config, globalYaml));
+  }
+
+  return applyEnvOverrides(config);
+}
+
+export function loadProjectArrays(
+  cwd: string,
+): { deny_paths: string[]; allow: string[] } | null {
+  const projectPath = join(cwd, ".pi", "sanitize.yaml");
+  const yaml = readYamlFile(projectPath);
+  if (!yaml) return null;
+  return {
+    deny_paths: Array.isArray(yaml.deny_paths)
+      ? yaml.deny_paths.filter((p): p is string => typeof p === "string")
+      : [],
+    allow: Array.isArray(yaml.allow)
+      ? yaml.allow.filter((a): a is string => typeof a === "string")
+      : [],
+  };
+}
+
+export function applyProjectArrays(
+  config: ScrubConfig,
+  arrays: { deny_paths: string[]; allow: string[] },
+): void {
+  const existingDeny = new Set(config.deny_paths);
+  for (const p of arrays.deny_paths) {
+    if (!existingDeny.has(p)) {
+      config.deny_paths.push(p);
+      existingDeny.add(p);
+    }
+  }
+  const existingAllow = new Set(config.allow);
+  for (const a of arrays.allow) {
+    if (!existingAllow.has(a)) {
+      config.allow.push(a);
+      existingAllow.add(a);
+    }
+  }
+}
+
+function applyEnvOverrides(config: ScrubConfig): ScrubConfig {
   const envUrl = process.env.SANITIZE_URL;
   if (envUrl) config.sanitize = { ...config.sanitize, url: envUrl };
 

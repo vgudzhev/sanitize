@@ -10,7 +10,7 @@ import { substitute } from "./substitute.js";
 import { SanitizeClient, SanitizeUnavailableError, PolicyVerificationError } from "./client.js";
 import { verifyEgress } from "./egress.js";
 import { isDeniedPath } from "./denylist.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, loadProjectArrays, applyProjectArrays } from "./config.js";
 import { registerSanitizeCommand } from "./ui.js";
 import { saveVault, loadVault, deleteVaultFile } from "./vault-persistence.js";
 import { AuditEmitter } from "./audit.js";
@@ -54,7 +54,7 @@ function rehydrateToolInput(
 }
 
 const extension = (api: ExtensionAPI) => {
-  const config = loadConfig(process.cwd(), false);
+  const config = loadConfig(process.cwd());
   let vault = new Vault(config.placeholders?.format_preserving ?? false);
   const client = new SanitizeClient(
     config.sanitize.url,
@@ -125,6 +125,13 @@ const extension = (api: ExtensionAPI) => {
             "error",
           );
         }
+      }
+    }
+
+    if (ctx.isProjectTrusted()) {
+      const projectArrays = loadProjectArrays(ctx.cwd);
+      if (projectArrays) {
+        applyProjectArrays(config, projectArrays);
       }
     }
 
@@ -237,6 +244,7 @@ const extension = (api: ExtensionAPI) => {
         "error",
       );
       ctx.abort();
+      return;
     }
 
     const rawValues = vault.getRawValues();

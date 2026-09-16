@@ -28,8 +28,11 @@ export class Vault {
 
   rehydrate(text: string): string {
     if (this.formatPreserving) {
+      const sorted = Array.from(this.forward.entries()).sort(
+        (a, b) => b[0].length - a[0].length,
+      );
       let result = text;
-      for (const [placeholder, value] of this.forward) {
+      for (const [placeholder, value] of sorted) {
         let idx = result.indexOf(placeholder);
         while (idx !== -1) {
           result =

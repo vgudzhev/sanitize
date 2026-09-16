@@ -104,6 +104,20 @@ describe("Vault", () => {
     });
   });
 
+  describe("format-preserving rehydration ordering", () => {
+    it("does not corrupt Org_11 when Org_1 was inserted first", () => {
+      const fpVault = new Vault(true);
+      for (let i = 1; i <= 11; i++) {
+        fpVault.getPlaceholder(`real-org-${i}`, "ORGANIZATION");
+      }
+      // Org_1 is a substring of Org_11 — without length-sorted replacement,
+      // replacing Org_1 first would corrupt Org_11 into "real-org-11"
+      const text = "Contact Org_1 and Org_11 please";
+      const result = fpVault.rehydrate(text);
+      expect(result).toBe("Contact real-org-1 and real-org-11 please");
+    });
+  });
+
   describe("restoreFrom", () => {
     it("mutates vault in place so existing references see restored data", () => {
       const ref = vault;
