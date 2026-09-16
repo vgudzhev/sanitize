@@ -249,7 +249,7 @@ curl -H "Authorization: Bearer $SANITIZE_TOKEN" \
 ### Security guarantees
 
 - **No content logging.** The service never logs request text. Metrics are category counts only.
-- **Stateless.** No content is stored. The vault lives client-side, encrypted.
+- **Stateless.** No content is stored. The vault lives client-side, encrypted (except in gateway mode — see below).
 - **Fail closed.** If the service is unreachable, content is withheld with `[[SCRUBBER_UNAVAILABLE]]`.
 - **Deterministic layers cannot be bypassed.** Prompt injection in logs has no effect on pattern-based detection.
 - **LLM layer is untrusted.** It can only add detections, never suppress them.
@@ -261,3 +261,102 @@ curl -H "Authorization: Bearer $SANITIZE_TOKEN" \
 - GDPR-grade anonymization (placeholders are reversible pseudonymization)
 - The model's own generated content (it originates in the cloud)
 - Secrets embedded in file paths or tool names (only content is scrubbed)
+
+---
+
+## Gateway mode (any LLM client)
+
+Gateway mode is a local HTTP proxy that sits between any OpenAI/Anthropic SDK client and the real API. It scrubs requests and rehydrates responses, so non-pi clients get the same scrubbing protection.
+
+**The gateway is a local sidecar** — it binds `127.0.0.1` only and is not intended for shared/org deployment. The vault lives in the gateway process memory for the lifetime of each session. This is the same trust boundary as the extension's in-memory vault.
+
+### 1. Start the gateway
+
+```bash
+cd sanitize
+source .venv/bin/activate
+uvicorn sanitize.gateway:gateway --host 127.0.0.1 --port 7412
+```
+
+### 2. Point your SDK at it
+
+**OpenAI:**
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:7412/openai/v1",
+    api_key="sk-your-real-key",  # forwarded to OpenAI
+)
+resp = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "My key is AKIAIOSFODNN7EXAMPLE"}],
+)
+# OpenAI sees: "My key is [[AWS_ACCESS_KEY_1]]"
+# You see: the real key, rehydrated
+```
+
+**Anthropic:**
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://localhost:7412/anthropic",
+    api_key="sk-ant-your-real-key",  # forwarded to Anthropic
+)
+resp = client.messages.create(
+    model="claude-sonnet-5",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "DB: postgres://admin:s3cret@db:5432/prod"}],
+)
+```
+
+### 3. Session management
+
+The gateway creates a vault per session. Sessions are identified by the `X-Sanitize-Session` header:
+
+- **If you send `X-Sanitize-Session: my-session-id`**, the gateway reuses that session's vault (so the same secret always maps to the same placeholder across requests).
+- **If you omit the header**, the gateway generates a new session ID and returns it in the response's `X-Sanitize-Session` header.
+
+Sessions expire after 1 hour of inactivity.
+
+### 4. Streaming
+
+Streaming is fully supported. The gateway buffers text deltas to handle placeholders that span chunk boundaries, then rehydrates and forwards each chunk.
+
+```python
+stream = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "..."}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content, end="")
+```
+
+### 5. What gets scrubbed
+
+The gateway walks the entire request body recursively. This includes:
+
+- `messages[].content` (string or content block array)
+- `system` (Anthropic: string or block array)
+- `tools[].function.description` and `parameters`
+- `messages[].tool_calls[].function.arguments`
+- `tool_result` content blocks
+
+On the response path, all strings are rehydrated — including tool call arguments, so downstream tool execution sees real values.
+
+### 6. Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SANITIZE_GATEWAY_OPENAI_URL` | `https://api.openai.com` | OpenAI upstream URL |
+| `SANITIZE_GATEWAY_ANTHROPIC_URL` | `https://api.anthropic.com` | Anthropic upstream URL |
+
+Non-POST requests (e.g., `GET /v1/models`) are passed through without modification.
+
+### 7. Limitations
+
+- **Local only.** The gateway binds `127.0.0.1` and must not be deployed as a shared service — it holds plaintext secrets in process memory.
+- **No format-preserving placeholders.** Gateway mode always uses bracketed placeholders (`[[TYPE_N]]`), which are required for reliable streaming rehydration.
+- **Auth headers are forwarded as-is.** The gateway does not validate your API key — it passes it through to the upstream provider.

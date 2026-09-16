@@ -8,12 +8,13 @@ Provider-agnostic: works with any LLM backend (Anthropic, OpenAI, Google, Ollama
 
 ## Architecture
 
-Two components:
+Three components:
 
 | Component | Language | Role |
 |-----------|----------|------|
 | `sanitize` | Python (FastAPI) | Stateless detection service on `localhost:7411`. Returns spans, never stores content. |
 | `extension` | TypeScript | Hooks the agent lifecycle, owns the session vault (placeholder <-> value), performs substitution and rehydration, enforces fail-closed. |
+| `gateway` | Python (FastAPI) | Optional local sidecar proxy on `localhost:7412`. OpenAI-/Anthropic-compatible — point any SDK at it for transparent scrubbing. |
 
 ## Detection layers
 
@@ -171,7 +172,7 @@ See [`docs/usage.md`](docs/usage.md) for full setup instructions.
 ## Running tests
 
 ```bash
-# sanitize (108 tests)
+# sanitize (135 tests)
 cd sanitize && source .venv/bin/activate
 pytest tests/ -v
 
