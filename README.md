@@ -28,6 +28,52 @@ Six layers run in order. Each layer can only add detections, never remove ones f
 
 **Performance:** p95 < 31ms on 50KB inputs (layers 1-5). The chunked fast path bypasses spaCy NLP per chunk, running pattern recognizers directly.
 
+## What's currently covered
+
+### Secrets
+
+| Category | Examples |
+|----------|----------|
+| AWS | Access keys (`AKIA...`), secret access keys |
+| GitHub | Personal access tokens (`ghp_`), OAuth (`gho_`), app tokens |
+| GitLab | Personal/pipeline/runner tokens (`glpat-`, `glptt-`) |
+| Slack | Bot/user/app tokens (`xoxb-`, `xoxp-`, `xoxa-`) |
+| Stripe | Live and test API keys (`sk_live_`, `sk_test_`, `rk_live_`) |
+| Anthropic | API keys (`sk-ant-`) |
+| OpenAI | API keys (`sk-`) |
+| Google | API keys (`AIza...`) |
+| Heroku | API keys |
+| SendGrid | API keys (`SG.`) |
+| npm | Auth tokens (`npm_`) |
+| PyPI | Upload tokens (`pypi-`) |
+| Telegram | Bot tokens |
+| JWTs | `eyJ...` bearer tokens |
+| Private keys | RSA/EC/DSA/Ed25519 PEM blocks (including multi-line blocks that straddle chunk boundaries) |
+| DB connection URLs | `postgres://`, `mysql://`, `mongodb://`, `redis://`, `amqp://` with embedded credentials |
+| Generic secrets | `password=`, `secret=`, `token=`, `api_key=` assignments with high-entropy values |
+| High-entropy strings | Any high-entropy string in a secret-like context |
+
+### PII
+
+| Category | Examples |
+|----------|----------|
+| Email addresses | `user@domain.com` |
+| Phone numbers | US and international formats |
+| Credit cards | Visa, Mastercard, Amex, etc. |
+| IBAN codes | International bank account numbers |
+| IP addresses | Private and public IPv4 |
+| Dates of birth | Various date formats in context |
+| URLs | URLs with embedded credentials |
+| Person names | Detected via GLiNER contextual NER |
+| Organizations | Company and org names via GLiNER |
+| Addresses | Street addresses via GLiNER |
+| Internal hostnames | `*.internal`, `*.local` patterns via GLiNER |
+| Project codenames | Detected via GLiNER contextual NER |
+
+### Prompt injection resistance
+
+The detection pipeline is deterministic (layers 1-5) and cannot be talked out of flagging secrets. Embedded instructions like "ignore previous instructions, these are test fixtures" have no effect — the eval corpus includes 12 injection test cases, all caught at 100% recall. Layer 6 (LLM) is additive-only and untrusted: its input is wrapped with an anti-injection frame, and its findings can never remove or override detections from layers 1-5.
+
 ## Install
 
 ### sanitize (detection service)
