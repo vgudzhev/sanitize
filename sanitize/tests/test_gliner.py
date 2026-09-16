@@ -46,7 +46,7 @@ class TestGlinerRecognizerWithMock:
 
     def test_detects_address(self):
         rec = self._make_recognizer_with_mock([
-            {"label": "address", "start": 8, "end": 38, "score": 0.78},
+            {"label": "address", "start": 8, "end": 38, "score": 0.90},
         ])
         results = rec.analyze("Address 123 Main St, Springfield, IL", ["ADDRESS"])
         assert len(results) == 1
@@ -63,7 +63,7 @@ class TestGlinerRecognizerWithMock:
         rec = self._make_recognizer_with_mock([
             {"label": "person", "start": 0, "end": 10, "score": 0.9},
             {"label": "organization", "start": 20, "end": 30, "score": 0.85},
-            {"label": "address", "start": 40, "end": 60, "score": 0.7},
+            {"label": "address", "start": 40, "end": 60, "score": 0.90},
         ])
         results = rec.analyze("x" * 80, ["PERSON", "ORGANIZATION", "ADDRESS"])
         assert len(results) == 3

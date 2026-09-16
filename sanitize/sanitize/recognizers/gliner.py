@@ -33,7 +33,7 @@ LABEL_TO_ENTITY: dict[str, str] = {
     "project codename": "PROJECT_CODENAME",
 }
 
-DEFAULT_THRESHOLD = 0.5
+DEFAULT_THRESHOLD = 0.85
 DEFAULT_MODEL = "urchade/gliner_multi_pii-v1"
 
 

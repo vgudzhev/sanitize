@@ -40,7 +40,7 @@ DEFAULTS: dict = {
                 "internal hostname",
                 "project codename",
             ],
-            "threshold": 0.5,
+            "threshold": 0.85,
         },
         "llm": {
             "enabled": False,
