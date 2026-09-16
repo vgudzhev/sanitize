@@ -1,6 +1,32 @@
 # pi-scrub
 
-Local sensitive-data scrubbing layer for the pi coding agent. Secrets and PII are replaced with stable, session-scoped placeholders (`[[AWS_ACCESS_KEY_1]]`, `[[EMAIL_2]]`) before leaving the machine. Real values are restored locally when tools execute and when text is displayed.
+Local sensitive-data scrubbing layer for coding agents. Every byte that leaves the machine toward a cloud LLM passes through a local detection service first. Secrets and PII are replaced with stable, session-scoped placeholders (`[[AWS_ACCESS_KEY_1]]`, `[[EMAIL_2]]`) so the model can still reason about the data; real values are restored locally when tools execute and when text is displayed.
+
+Provider-agnostic: works with any LLM backend (Anthropic, OpenAI, Google, Ollama, etc.) via the pi agent harness.
+
+## Architecture
+
+Two components:
+
+| Component | Language | Role |
+|-----------|----------|------|
+| `sanitize` | Python (FastAPI) | Stateless detection service on `localhost:7411`. Returns spans, never stores content. |
+| `extension` | TypeScript | Hooks the agent lifecycle, owns the session vault (placeholder <-> value), performs substitution and rehydration, enforces fail-closed. |
+
+## Detection layers
+
+Six layers run in order. Each layer can only add detections, never remove ones from earlier layers.
+
+| # | Layer | What it catches | Speed |
+|---|-------|----------------|-------|
+| 1 | **Secret patterns** (gitleaks-derived regex) | AWS/GCP/Azure keys, GitHub/GitLab/Slack/Stripe tokens, JWTs, private key blocks, DB connection URLs, generic password assignments | < 1ms |
+| 2 | **Entropy** | High-entropy strings in secret-like contexts (`=`, `:`, `Bearer`, etc.) | < 1ms |
+| 3 | **Structured PII** (Presidio + spaCy) | Email, phone, IBAN, credit card, IP address, dates of birth, SSN, URLs | ~5ms |
+| 4 | **Contextual NER** (GLiNER zero-shot) | Person names, organizations, addresses, internal hostnames, project codenames | ~50ms |
+| 5 | **Custom vocabulary** | User-defined patterns and literals via config | < 1ms |
+| 6 | **Local LLM** (Ollama, optional) | Catches secrets that no pattern matched. Additive-only: cannot suppress findings from layers 1-5. Off by default. | 200ms-10s |
+
+**Performance:** p95 < 31ms on 50KB inputs (layers 1-5). The chunked fast path bypasses spaCy NLP per chunk, running pattern recognizers directly.
 
 ## Install
 
@@ -8,10 +34,13 @@ Local sensitive-data scrubbing layer for the pi coding agent. Secrets and PII ar
 
 ```bash
 cd sanitize
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 python -m spacy download en_core_web_sm
+
+# GLiNER (Layer 4) — optional but recommended
+pip install "torch==2.2.2" "gliner==0.2.10" "transformers>=4.38,<4.45" "numpy<2"
 ```
 
 Start it:
@@ -28,14 +57,32 @@ npm install
 
 Link into pi (symlink into `~/.pi/agent/extensions/pi-scrub/` or configure in pi's extension settings).
 
+### Layer 6: Local LLM (optional)
+
+Requires a running [Ollama](https://ollama.com) instance:
+
+```bash
+ollama pull llama3.2:3b
+```
+
+Enable in policy config:
+```yaml
+detectors:
+  llm:
+    enabled: true
+    model: llama3.2:3b
+```
+
 ## Configuration
 
-Configuration is loaded from built-in defaults. Future versions will support `~/.pi/agent/sanitize.yaml` and per-project `.pi/sanitize.yaml`.
+Policy is loaded from built-in defaults, then merged with `~/.pi/agent/sanitize.yaml` (global) and `.pi/sanitize.yaml` (per-project).
 
 Key defaults:
 - sanitize URL: `http://127.0.0.1:7411`
 - Timeout: 4000ms
 - Fail-closed: always (if sanitize is unreachable, content is withheld)
+- GLiNER threshold: 0.85
+- LLM layer: disabled
 
 ### Deny-list
 
@@ -54,41 +101,34 @@ Once installed, scrubbing is automatic. The extension hooks into pi's lifecycle:
 
 ### Commands
 
-- `/sanitize status` -- show sanitize health and redaction count
-- `/sanitize show` -- list all placeholders and their types (not values)
-- `/sanitize test <text>` -- test detection on arbitrary text
-
-## Detection layers
-
-| # | Layer | Catches |
-|---|-------|---------|
-| 1 | Secret patterns (gitleaks-derived) | AWS/GCP/Azure keys, GitHub/GitLab tokens, Slack, Stripe, JWTs, private key blocks, DB URLs with credentials, generic password assignments |
-| 2 | Entropy | High-entropy strings in secret-like contexts (after `=`, `:`, `Bearer`, etc.) |
-| 3 | Structured PII (Presidio) | Email, phone, IBAN, credit card, IP address, dates of birth |
-| 5 | Custom vocabulary | User-defined patterns and literals (via config) |
+- `/sanitize status` — show sanitize health and redaction count
+- `/sanitize show` — list all placeholders and their types (not values)
+- `/sanitize test <text>` — test detection on arbitrary text
+- `/sanitize resume` — restore vault from encrypted persistence (for session resume)
 
 ## Running tests
 
 ```bash
-# sanitize
+# sanitize (81 tests)
 cd sanitize && source .venv/bin/activate
 pytest tests/ -v
 
-# extension
+# extension (75 tests)
 cd extension && npm test
 
-# evals (requires sanitize venv)
+# evals — 317 items across 26 categories, 100% recall
 cd .. && source sanitize/.venv/bin/activate
-python evals/generate_corpus.py
 python evals/run_evals.py
 ```
 
+## Eval corpus
+
+26 categories including: AWS keys, GitHub/GitLab/Slack/Stripe/Anthropic/OpenAI tokens, JWTs, private keys, DB URLs, emails, phone numbers, credit cards, IBANs, IPs, dates of birth, high-entropy secrets, and **prompt injection resistance** (12 test cases with embedded instructions trying to suppress detection).
+
 ## What this does NOT protect against
 
-- A compromised local machine or a malicious pi extension (extensions run with full permissions)
+- A compromised local machine or a malicious extension
 - Image or binary attachment content
 - GDPR-grade anonymization (placeholders are pseudonymization, reversible by the local vault)
-- Free-text secrets with no structural pattern (layers 4 and 6, in later phases, target this)
-- The model's own generated content on the response path (it originates in the cloud already)
-- Secrets embedded in file paths or tool names (only file content and user input are scrubbed)
-- False-positive tuning: layers 1 and 3 favor recall over precision, so benign strings may be redacted
+- The model's own generated content on the response path (it originates in the cloud)
+- Secrets embedded in file paths or tool names (only content and user input are scrubbed)
