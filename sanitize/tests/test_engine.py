@@ -190,7 +190,7 @@ class TestCustomPatterns:
             "literals": [],
         }
         import sanitize.engine
-        sanitize.engine._analyzer_cache = None
+        sanitize.engine._analyzer_cache = {}
         text = "Customer CUST-12345678 placed an order"
         spans, _ = detect(text, policy_config=policy)
         types = {s.type for s in spans}
@@ -203,7 +203,7 @@ class TestCustomPatterns:
             "literals": ["acme-internal.example"],
         }
         import sanitize.engine
-        sanitize.engine._analyzer_cache = None
+        sanitize.engine._analyzer_cache = {}
         text = "Deploy to acme-internal.example server"
         spans, _ = detect(text, policy_config=policy)
         types = {s.type for s in spans}
@@ -373,7 +373,7 @@ class TestChunkedDetection:
     def test_large_text_with_secret_detects_at_correct_offset(self, policy):
         import sanitize.engine
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
-        sanitize.engine._analyzer_cache = None
+        sanitize.engine._analyzer_cache = {}
 
         padding = "# This is a harmless comment line\n" * 200
         secret = "password=SuperSecretValue123456\n"
@@ -392,7 +392,7 @@ class TestChunkedDetection:
     def test_clean_chunks_are_cached(self, policy):
         import sanitize.engine
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
-        sanitize.engine._analyzer_cache = None
+        sanitize.engine._analyzer_cache = {}
 
         # Text passes prefilter (password=) but has no real detections
         clean_text = "# set password=ok then restart\n" * 200
@@ -406,7 +406,7 @@ class TestChunkedDetection:
         import sanitize.engine
         from unittest.mock import patch
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
-        sanitize.engine._analyzer_cache = None
+        sanitize.engine._analyzer_cache = {}
 
         clean_text = "# set password=ok then restart\n" * 200
         assert len(clean_text) > CHUNK_THRESHOLD
@@ -419,7 +419,7 @@ class TestChunkedDetection:
     def test_private_key_straddling_boundary(self, policy):
         import sanitize.engine
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
-        sanitize.engine._analyzer_cache = None
+        sanitize.engine._analyzer_cache = {}
 
         body = "\n".join("A" * 64 for _ in range(60))
         text = "# pad\n" * 200 + f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\n"
@@ -445,7 +445,7 @@ class TestChunkedDetection:
         import sanitize.engine
         from unittest.mock import patch
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
-        sanitize.engine._analyzer_cache = None
+        sanitize.engine._analyzer_cache = {}
 
         policy_a = load_policy()
         clean_text = "# set password=ok then restart\n" * 200
@@ -456,7 +456,7 @@ class TestChunkedDetection:
         # Same text, different policy — cache should not be reused
         policy_b = load_policy()
         policy_b["extra_flag"] = True
-        sanitize.engine._analyzer_cache = None
+        sanitize.engine._analyzer_cache = {}
         with patch.object(sanitize.engine, "_detect_chunk_fast", wraps=sanitize.engine._detect_chunk_fast) as spy:
             detect(clean_text, policy_config=policy_b)
             assert spy.call_count > 0, "Different policy should not reuse cached chunks"
@@ -465,7 +465,7 @@ class TestChunkedDetection:
         import sanitize.engine
         from unittest.mock import patch
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
-        sanitize.engine._analyzer_cache = None
+        sanitize.engine._analyzer_cache = {}
 
         clean_text = "# just a plain code comment\n" * 500
         assert len(clean_text) > CHUNK_THRESHOLD

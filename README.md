@@ -152,14 +152,28 @@ Once installed, scrubbing is automatic. The extension hooks into pi's lifecycle:
 - `/sanitize test <text>` — test detection on arbitrary text
 - `/sanitize resume` — restore vault from encrypted persistence (for session resume)
 
+## Org mode (team deployment)
+
+Deploy sanitize as a shared service with a central, signed policy. Local configs can only tighten the policy — never loosen it.
+
+Features:
+- **Signed policy**: Ed25519-signed canonical JSON, verified by the extension
+- **Bearer token auth**: `SANITIZE_TOKEN` env var on both service and extension
+- **Audit events**: fire-and-forget category counts to an audit endpoint (never content)
+- **`/v1/metrics`**: aggregate detection counts + policy version
+- **Tightening-only merge**: local configs can add detections but never suppress them
+- **Docker**: `docker build -t sanitize .` and deploy behind a reverse proxy for mTLS/OIDC
+
+See [`docs/usage.md`](docs/usage.md) for full setup instructions.
+
 ## Running tests
 
 ```bash
-# sanitize (81 tests)
+# sanitize (108 tests)
 cd sanitize && source .venv/bin/activate
 pytest tests/ -v
 
-# extension (75 tests)
+# extension (87 tests)
 cd extension && npm test
 
 # evals — 317 items across 26 categories, 100% recall

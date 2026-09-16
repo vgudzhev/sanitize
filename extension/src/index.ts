@@ -7,12 +7,13 @@ import type {
 } from "./types.js";
 import { Vault } from "./vault.js";
 import { substitute } from "./substitute.js";
-import { SanitizeClient, SanitizeUnavailableError } from "./client.js";
+import { SanitizeClient, SanitizeUnavailableError, PolicyVerificationError } from "./client.js";
 import { verifyEgress } from "./egress.js";
 import { isDeniedPath } from "./denylist.js";
 import { loadConfig } from "./config.js";
 import { registerSanitizeCommand } from "./ui.js";
 import { saveVault, loadVault, deleteVaultFile } from "./vault-persistence.js";
+import { AuditEmitter } from "./audit.js";
 
 function extractPathFromToolCall(event: ToolCallEvent): string | null {
   const input = event.input;
@@ -55,10 +56,20 @@ function rehydrateToolInput(
 const extension = (api: ExtensionAPI) => {
   const config = loadConfig(process.cwd(), false);
   let vault = new Vault(config.placeholders?.format_preserving ?? false);
-  const client = new SanitizeClient(config.sanitize.url, config.sanitize.timeout_ms);
+  const client = new SanitizeClient(
+    config.sanitize.url,
+    config.sanitize.timeout_ms,
+    config.org.token,
+  );
   const home = homedir();
   const vaultPath = join(home, ".sanitize", "vault.enc");
   const vaultPassphrase = process.env.SANITIZE_VAULT_KEY ?? null;
+
+  const audit: AuditEmitter | null =
+    config.org.audit_url ? new AuditEmitter(config.org.audit_url, config.org.token) : null;
+
+  let policyVersion = "local";
+  let policyVerificationFailed = false;
 
   const restoreVault = (): number => {
     if (!vaultPassphrase) return 0;
@@ -78,6 +89,45 @@ const extension = (api: ExtensionAPI) => {
         "warning",
       );
     }
+
+    if (config.org.policy_url) {
+      try {
+        const policyResp = await client.fetchPolicy(config.org.public_key);
+        policyVersion = policyResp.policy_version;
+
+        const central = policyResp.policy;
+        if (Array.isArray(central.deny_paths)) {
+          const existing = new Set(config.deny_paths);
+          for (const p of central.deny_paths as string[]) {
+            if (!existing.has(p)) config.deny_paths.push(p);
+          }
+        }
+        if (Array.isArray(central.allow)) {
+          const centralAllow = new Set(central.allow as string[]);
+          config.allow = config.allow.filter((a) => centralAllow.has(a));
+        }
+
+        ctx.ui.notify(
+          `sanitize: org policy loaded (v${policyVersion})`,
+          "info",
+        );
+      } catch (e) {
+        if (e instanceof PolicyVerificationError) {
+          policyVerificationFailed = true;
+          ctx.ui.notify(
+            `sanitize: BLOCKED — org policy signature invalid`,
+            "error",
+          );
+        } else {
+          const msg = e instanceof Error ? e.message : "unknown error";
+          ctx.ui.notify(
+            `sanitize: failed to fetch org policy — ${msg}`,
+            "error",
+          );
+        }
+      }
+    }
+
     ctx.ui.setStatus(
       "sanitize",
       `sanitize: on · ${vault.getRedactedCount()} redacted`,
@@ -85,6 +135,12 @@ const extension = (api: ExtensionAPI) => {
   });
 
   api.on("input", async (event, ctx) => {
+    if (policyVerificationFailed) {
+      return {
+        action: "transform" as const,
+        text: "[[ORG_POLICY_INVALID: content withheld]]",
+      };
+    }
     try {
       const result = await client.detect({
         text: event.text,
@@ -92,6 +148,7 @@ const extension = (api: ExtensionAPI) => {
       });
       if (result.spans.length === 0) return { action: "continue" as const };
       const scrubbed = substitute(event.text, result.spans, vault);
+      if (audit) audit.emit(result.spans, "input", result.policy_version);
       ctx.ui.setStatus(
         "sanitize",
         `sanitize: on · ${vault.getRedactedCount()} redacted`,
@@ -121,6 +178,16 @@ const extension = (api: ExtensionAPI) => {
   });
 
   api.on("tool_result", async (event, ctx) => {
+    if (policyVerificationFailed) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "[[ORG_POLICY_INVALID: content withheld]]",
+          },
+        ],
+      };
+    }
     try {
       const newContent: ContentBlock[] = await Promise.all(
         event.content.map(async (block) => {
@@ -130,6 +197,7 @@ const extension = (api: ExtensionAPI) => {
             hints: { source: "tool_result", tool: event.toolName },
           });
           if (result.spans.length === 0) return block;
+          if (audit) audit.emit(result.spans, "tool_result", result.policy_version);
           return {
             type: "text" as const,
             text: substitute(block.text, result.spans, vault),

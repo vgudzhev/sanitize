@@ -73,6 +73,7 @@ vi.mock("../src/config.js", () => ({
   loadConfig: () => ({
     sanitize: { url: "http://localhost:7411", timeout_ms: 4000 },
     deny_paths: [],
+    org: { policy_url: null, token: null, audit_url: null, public_key: null },
   }),
 }));
 
@@ -294,6 +295,7 @@ describe("§6 acceptance: end-to-end scrub pipeline", () => {
       loadConfig: () => ({
         sanitize: { url: "http://localhost:7411", timeout_ms: 4000 },
         deny_paths: [],
+        org: { policy_url: null, token: null, audit_url: null, public_key: null },
       }),
     }));
     vi.doMock("node:os", () => ({

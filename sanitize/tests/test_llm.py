@@ -184,7 +184,7 @@ class TestAdditiveOnlyIntegration:
         mock_rec._available = True
 
         with patch("sanitize.engine._build_llm_recognizer", return_value=mock_rec), \
-             patch("sanitize.engine._analyzer_cache", None), \
+             patch("sanitize.engine._analyzer_cache", {}), \
              patch.object(mock_rec, "analyze") as mock_analyze:
 
             from presidio_analyzer import RecognizerResult
@@ -217,7 +217,7 @@ class TestAdditiveOnlyIntegration:
 
         text = "Send it to https://example.com/path?q=1 thanks"
         off_policy = {"allow": [], "detectors": {"llm": {"enabled": False}}}
-        eng._analyzer_cache = None
+        eng._analyzer_cache = {}
         baseline, _ = detect(text, policy_config=off_policy)
         assert baseline, "no layer 1-5 span — test would be vacuous"
 
@@ -251,7 +251,7 @@ class TestAdditiveOnlyIntegration:
             "allow": [],
             "detectors": {"llm": {"enabled": False}},
         }
-        with patch("sanitize.engine._analyzer_cache", None), \
+        with patch("sanitize.engine._analyzer_cache", {}), \
              patch("urllib.request.urlopen") as mock_url:
             detect("password = secret123", policy_config=policy)
         mock_url.assert_not_called()
@@ -267,7 +267,7 @@ class TestAdditiveOnlyIntegration:
         mock_rec._available = True
 
         with patch("sanitize.engine._build_llm_recognizer", return_value=mock_rec), \
-             patch("sanitize.engine._analyzer_cache", None), \
+             patch("sanitize.engine._analyzer_cache", {}), \
              patch.object(mock_rec, "analyze") as mock_analyze:
             mock_analyze.return_value = []
             detect(text, policy_config=policy)

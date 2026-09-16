@@ -1,0 +1,8 @@
+.git
+.venv
+*.pyc
+__pycache__
+node_modules
+.venv-314-backup
+extension/node_modules
+*.egg-info

@@ -21,7 +21,7 @@ async def test_health(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
-    assert data["version"] == "0.1.0"
+    assert data["version"] == "0.2.0"
     assert "gitleaks" in data["detectors"]
 
 
@@ -68,5 +68,7 @@ async def test_policy_endpoint(client):
     resp = await client.get("/v1/policy")
     assert resp.status_code == 200
     data = resp.json()
-    assert "deny_paths" in data
-    assert "allow" in data
+    assert "policy" in data
+    assert "policy_version" in data
+    assert "deny_paths" in data["policy"]
+    assert "allow" in data["policy"]

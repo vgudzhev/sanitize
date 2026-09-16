@@ -117,7 +117,7 @@ def _build_analyzer(policy_config: dict) -> tuple[AnalyzerEngine, list[str]]:
     return analyzer, detectors_run
 
 
-_analyzer_cache: dict[int, tuple[AnalyzerEngine, list[str], list, LlmRecognizer | None]] | None = None
+_analyzer_cache: dict[str, tuple[AnalyzerEngine, list[str], list, LlmRecognizer | None]] = {}
 
 
 def _get_pattern_recognizers(analyzer: AnalyzerEngine) -> list:
@@ -150,15 +150,15 @@ def _get_analyzer(
     policy_config: dict,
 ) -> tuple[AnalyzerEngine, list[str], list, LlmRecognizer | None]:
     global _analyzer_cache
-    config_id = id(policy_config)
-    if _analyzer_cache is not None and config_id in _analyzer_cache:
-        return _analyzer_cache[config_id]
+    fp = _policy_fingerprint(policy_config)
+    if fp in _analyzer_cache:
+        return _analyzer_cache[fp]
     analyzer, detectors = _build_analyzer(policy_config)
     pattern_recs = _get_pattern_recognizers(analyzer)
     llm_rec = _build_llm_recognizer(policy_config)
     if llm_rec is not None:
         detectors.append("llm")
-    _analyzer_cache = {config_id: (analyzer, detectors, pattern_recs, llm_rec)}
+    _analyzer_cache[fp] = (analyzer, detectors, pattern_recs, llm_rec)
     return analyzer, detectors, pattern_recs, llm_rec
 
 
