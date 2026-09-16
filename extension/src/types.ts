@@ -67,6 +67,43 @@ export interface SessionShutdownEvent {
   type: "session_shutdown";
 }
 
+export interface ContextMessage {
+  role: string;
+  content: ContentBlock[];
+}
+
+// Fires before each LLM call with the full message list about to be sent.
+export interface ContextEvent {
+  type: "context";
+  messages: ContextMessage[];
+}
+
+export interface ContextEventResult {
+  messages: ContextMessage[];
+}
+
+// Fires after an assistant message completes.
+export interface MessageEndEvent {
+  type: "message_end";
+  role: "assistant";
+  text: string;
+}
+
+// Fires before compaction with the messages that will be summarized.
+export interface SessionBeforeCompactEvent {
+  type: "session_before_compact";
+  messages: ContextMessage[];
+}
+
+export type SessionBeforeCompactEventResult = ContextEventResult;
+
+// Fires when the active model changes.
+export interface ModelSelectEvent {
+  type: "model_select";
+  model: string;
+  provider: string;
+}
+
 export interface MarkdownTransformContext {
   messageType: "user" | "assistant" | "assistant-thinking";
   isStreaming: boolean;
@@ -124,6 +161,25 @@ export interface ExtensionAPI {
   on(
     event: "before_provider_request",
     handler: ExtensionHandler<BeforeProviderRequestEvent, unknown>,
+  ): void;
+  on(
+    event: "context",
+    handler: ExtensionHandler<ContextEvent, ContextEventResult>,
+  ): void;
+  on(
+    event: "message_end",
+    handler: ExtensionHandler<MessageEndEvent>,
+  ): void;
+  on(
+    event: "session_before_compact",
+    handler: ExtensionHandler<
+      SessionBeforeCompactEvent,
+      SessionBeforeCompactEventResult
+    >,
+  ): void;
+  on(
+    event: "model_select",
+    handler: ExtensionHandler<ModelSelectEvent>,
   ): void;
   registerCommand(
     name: string,

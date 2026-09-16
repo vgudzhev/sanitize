@@ -2,8 +2,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   ExtensionAPI,
+  ExtensionContext,
   ToolCallEvent,
   ContentBlock,
+  ContextMessage,
 } from "./types.js";
 import { Vault } from "./vault.js";
 import { substitute } from "./substitute.js";
@@ -51,6 +53,21 @@ function rehydrateToolInput(
       rehydrateToolInput(value as Record<string, unknown>, vault);
     }
   }
+}
+
+// Providers that run inference on the user's own machine. Scrubbing is still
+// on for these (the session may later switch to a cloud model), but it's
+// worth telling the user the overhead is optional.
+const LOCAL_PROVIDERS = new Set([
+  "ollama",
+  "llama.cpp",
+  "llamacpp",
+  "local",
+  "lmstudio",
+]);
+
+export function isLocalProvider(provider: string): boolean {
+  return LOCAL_PROVIDERS.has(provider.trim().toLowerCase());
 }
 
 const extension = (api: ExtensionAPI) => {
@@ -265,6 +282,131 @@ const extension = (api: ExtensionAPI) => {
         );
         ctx.abort();
       }
+    }
+  });
+
+  // Shared by `context` and `session_before_compact`: re-scan every text block
+  // in the message list and substitute anything found. Ingress scrubbing
+  // (input / tool_result) should have caught everything already, so a hit
+  // here indicates a bug elsewhere — log it so it's visible.
+  const withheldMessages = (
+    messages: ContextMessage[],
+    text: string,
+  ): ContextMessage[] =>
+    messages.map((m) => ({
+      role: m.role,
+      content: [{ type: "text" as const, text }],
+    }));
+
+  const rescanMessages = async (
+    messages: ContextMessage[],
+    source: "context" | "session_before_compact",
+    entryType: string,
+    ctx: ExtensionContext,
+  ): Promise<{ messages: ContextMessage[] }> => {
+    if (policyVerificationFailed) {
+      return {
+        messages: withheldMessages(
+          messages,
+          "[[ORG_POLICY_INVALID: content withheld]]",
+        ),
+      };
+    }
+    try {
+      let found = 0;
+      const rescanned: ContextMessage[] = await Promise.all(
+        messages.map(async (message) => {
+          const content: ContentBlock[] = await Promise.all(
+            message.content.map(async (block) => {
+              if (block.type !== "text") return block;
+              const result = await client.detect({
+                text: block.text,
+                hints: { source },
+              });
+              if (result.spans.length === 0) return block;
+              found += result.spans.length;
+              if (audit) audit.emit(result.spans, source, result.policy_version);
+              return {
+                type: "text" as const,
+                text: substitute(block.text, result.spans, vault),
+              };
+            }),
+          );
+          return { role: message.role, content };
+        }),
+      );
+      if (found > 0) {
+        api.appendEntry(entryType, { count: found });
+        ctx.ui.notify(
+          `sanitize: ${source} re-scan caught ${found} span(s) that ingress missed (this should never fire — please report)`,
+          "warning",
+        );
+        ctx.ui.setStatus(
+          "sanitize",
+          `sanitize: on · ${vault.getRedactedCount()} redacted`,
+        );
+      }
+      return { messages: rescanned };
+    } catch (e) {
+      if (e instanceof SanitizeUnavailableError) {
+        ctx.ui.notify(
+          `sanitize unavailable — ${source} withheld (fail-closed)`,
+          "error",
+        );
+        return {
+          messages: withheldMessages(
+            messages,
+            "[[SCRUBBER_UNAVAILABLE: content withheld]]",
+          ),
+        };
+      }
+      throw e;
+    }
+  };
+
+  api.on("context", (event, ctx) =>
+    rescanMessages(
+      event.messages,
+      "context",
+      "sanitize_context_rescan_fired",
+      ctx,
+    ),
+  );
+
+  api.on("session_before_compact", (event, ctx) =>
+    rescanMessages(
+      event.messages,
+      "session_before_compact",
+      "sanitize_compact_rescan_fired",
+      ctx,
+    ),
+  );
+
+  // Cheap sanity metric: did the model echo back a raw secret that somehow
+  // survived in its context? Log only — the assistant text is already
+  // displayed locally, and the placeholder→value direction is what the
+  // markdown transformer does on purpose.
+  api.on("message_end", (event, ctx) => {
+    if (event.role !== "assistant") return;
+    let leaked = 0;
+    for (const raw of vault.getRawValues()) {
+      if (raw.length >= 8 && event.text.includes(raw)) leaked++;
+    }
+    if (leaked > 0) {
+      api.appendEntry("sanitize_assistant_leak_detected", { count: leaked });
+      ctx.ui.notify(
+        `sanitize: assistant output contains ${leaked} raw vault value(s) — a secret reached the model unscrubbed (please report)`,
+        "warning",
+      );
+    }
+  });
+
+  api.on("model_select", (event, ctx) => {
+    if (isLocalProvider(event.provider)) {
+      ctx.ui.notify(
+        "sanitize: local model selected — scrubbing still active (overhead may be unnecessary)",
+        "info",
+      );
     }
   });
 
