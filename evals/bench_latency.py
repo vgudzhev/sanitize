@@ -10,28 +10,43 @@ Methodology notes:
 - Payloads are deterministic (seeded) mixes of code, logs, and shell output
   with planted secrets roughly every ~2KB, so the chunk prefilter fires on
   most chunks and detection genuinely runs. This is a conservative workload.
-- One untimed warm-up call per size absorbs one-off costs (analyzer build,
-  spaCy / GLiNER model load) that a long-running service pays once.
+- Untimed warm-up calls (one per code path) absorb one-off costs (analyzer
+  build, spaCy / GLiNER model load) that a long-running service pays once.
 - The engine's clean-chunk cache is cleared before every timed iteration so
   each run reflects a fresh, never-seen tool result. Pass --keep-cache to
   measure the warm-cache path instead.
+- Each size bucket stops early once --max-seconds of timed work has elapsed,
+  so a badly failing gate reports in bounded time. The achieved iteration
+  count is shown as `n` in the table.
 - The LLM recognizer is forced off: it needs Ollama and is not part of the
-  CPU latency budget.
+  CPU latency budget. --no-gliner disables the GLiNER layer as well, which
+  is useful for attributing cost to the regex/Presidio layers alone.
 
 Usage:
     cd sanitize && python ../evals/bench_latency.py
     cd evals && python bench_latency.py --iterations 100
+    python bench_latency.py --no-gliner --max-seconds 10
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import logging
 import os
 import random
 import statistics
 import sys
 import time
+import warnings
+
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+# GLiNER/transformers emit a per-chunk truncation UserWarning and assorted
+# FutureWarnings; they would drown the results table.
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sanitize")
@@ -43,9 +58,11 @@ from sanitize.policy import load_policy  # noqa: E402
 
 DEFAULT_SIZES = [1024, 10240, 51200, 102400]
 DEFAULT_ITERATIONS = 50
+DEFAULT_MAX_SECONDS = 60.0
 GATE_SIZE_BYTES = 51200
 GATE_P95_MS = 300.0
 SECRET_EVERY_BYTES = 2048
+FIRST_SECRET_AT_BYTES = 256  # so even a 1KB payload carries a planted secret
 
 
 # --------------------------------------------------------------------------
@@ -162,7 +179,7 @@ def generate_payload(target_bytes: int, seed: int = 0) -> str:
     rng = random.Random(seed ^ target_bytes)
     lines: list[str] = []
     size = 0
-    since_secret = 0
+    since_secret = SECRET_EVERY_BYTES - FIRST_SECRET_AT_BYTES
     while size < target_bytes:
         if since_secret >= SECRET_EVERY_BYTES:
             line = _planted_secret(rng)
@@ -182,26 +199,47 @@ def generate_payload(target_bytes: int, seed: int = 0) -> str:
 # --------------------------------------------------------------------------
 
 
+def warm_up(policy: dict, seed: int) -> None:
+    """Exercise both code paths once, untimed, so model loads are excluded."""
+    engine._CLEAN_CHUNK_CACHE.clear()
+    detect(generate_payload(1024, seed), policy_config=policy)  # single path
+    detect(generate_payload(engine.CHUNK_THRESHOLD + 1024, seed), policy_config=policy)  # chunked
+
+
 def bench(
     payload: str,
     iterations: int,
     policy: dict,
     clear_cache: bool = True,
+    max_seconds: float | None = None,
 ) -> tuple[list[float], int]:
-    """Time detect() over the payload. Returns (elapsed_ms per iteration, span count)."""
-    # Untimed warm-up: builds the analyzer and loads models on first call.
-    if clear_cache:
-        engine._CLEAN_CHUNK_CACHE.clear()
-    spans, _ = detect(payload, policy_config=policy)
+    """Time detect() over the payload.
 
+    Runs up to `iterations` timed calls, stopping early once `max_seconds` of
+    timed work has accumulated (always at least one). Returns
+    (elapsed_ms per iteration, span count).
+    """
     times: list[float] = []
-    for _ in range(iterations):
+    n_spans = 0
+    budget_start = time.perf_counter()
+    for i in range(iterations):
+        if i > 0 and max_seconds is not None and (time.perf_counter() - budget_start) >= max_seconds:
+            break
         if clear_cache:
             engine._CLEAN_CHUNK_CACHE.clear()
         t0 = time.perf_counter()
-        detect(payload, policy_config=policy)
+        spans, _ = detect(payload, policy_config=policy)
         times.append((time.perf_counter() - t0) * 1000.0)
-    return times, len(spans)
+        n_spans = len(spans)
+    return times, n_spans
+
+
+def disable_gliner(policy: dict) -> None:
+    """Mark the GLiNER recognizer unavailable so analyze() returns [] without loading a model."""
+    analyzer, _, _, _ = engine._get_analyzer(policy)
+    for rec in analyzer.registry.recognizers:
+        if type(rec).__name__ == "GlinerRecognizer":
+            rec._available = False
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -228,7 +266,7 @@ def _gliner_status(policy: dict) -> str:
             if rec._available is True:
                 return f"loaded ({rec.model_name})"
             if rec._available is False:
-                return "unavailable (gliner/torch not installed or model load failed)"
+                return "disabled (--no-gliner, gliner/torch not installed, or model load failed)"
             return "registered, not yet invoked"
     return "not registered"
 
@@ -244,12 +282,22 @@ def main() -> int:
                     help=f"size bucket the p95 gate applies to (default {GATE_SIZE_BYTES})")
     ap.add_argument("--gate-ms", type=float, default=GATE_P95_MS,
                     help=f"p95 budget in ms for the gate size (default {GATE_P95_MS:g})")
+    ap.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS,
+                    help=f"stop a size bucket early after this many seconds of timed work "
+                         f"(default {DEFAULT_MAX_SECONDS:g}; 0 = no limit)")
     ap.add_argument("--keep-cache", action="store_true",
                     help="do not clear the clean-chunk cache between iterations")
+    ap.add_argument("--no-gliner", action="store_true",
+                    help="disable the GLiNER layer (measure regex/Presidio layers only)")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="show engine log output (model load warnings, etc.)")
     args = ap.parse_args()
 
     if args.iterations < 1:
         ap.error("--iterations must be >= 1")
+    max_seconds = args.max_seconds if args.max_seconds > 0 else None
+
+    logging.basicConfig(level=logging.WARNING if args.verbose else logging.ERROR)
 
     policy = copy.deepcopy(load_policy())
     policy.setdefault("detectors", {}).setdefault("llm", {})["enabled"] = False
@@ -259,18 +307,31 @@ def main() -> int:
         sizes.append(args.gate_size)
         sizes.sort()
 
-    print(f"sanitize latency benchmark  (iterations={args.iterations}, seed={args.seed}, "
+    print(f"sanitize latency benchmark  (iterations<={args.iterations}, "
+          f"max {max_seconds:g}s/size, seed={args.seed}, "
+          f"chunk cache {'kept' if args.keep_cache else 'cleared'} per run)"
+          if max_seconds else
+          f"sanitize latency benchmark  (iterations={args.iterations}, seed={args.seed}, "
           f"chunk cache {'kept' if args.keep_cache else 'cleared'} per run)")
     print(f"python {sys.version.split()[0]}  chunk threshold={engine.CHUNK_THRESHOLD}B  "
           f"chunk target={engine.CHUNK_TARGET}B")
     print()
 
+    if args.no_gliner:
+        disable_gliner(policy)
+    print("  warming up (analyzer build, model load) ...", end="", flush=True)
+    t0 = time.perf_counter()
+    warm_up(policy, args.seed)
+    print(f" {time.perf_counter() - t0:.1f}s")
+
     results: dict[int, dict] = {}
     for size in sizes:
         payload = generate_payload(size, seed=args.seed)
         print(f"  benchmarking {_size_label(size):>6} ...", end="", flush=True)
-        times, n_spans = bench(payload, args.iterations, policy, clear_cache=not args.keep_cache)
+        times, n_spans = bench(payload, args.iterations, policy,
+                               clear_cache=not args.keep_cache, max_seconds=max_seconds)
         results[size] = {
+            "n": len(times),
             "p50": percentile(times, 50),
             "p95": percentile(times, 95),
             "p99": percentile(times, 99),
@@ -279,7 +340,8 @@ def main() -> int:
             "spans": n_spans,
             "path": "single" if size <= engine.CHUNK_THRESHOLD else "chunked",
         }
-        print(f" p95={results[size]['p95']:.1f}ms")
+        capped = " (time-capped)" if len(times) < args.iterations else ""
+        print(f" n={len(times)} p95={results[size]['p95']:.1f}ms{capped}")
 
     _, detectors_run, _, _ = engine._get_analyzer(policy)
     print()
@@ -287,12 +349,13 @@ def main() -> int:
     print(f"gliner:    {_gliner_status(policy)}")
     print()
 
-    hdr = f"{'size':>7} {'path':>8} {'spans':>6} {'p50 ms':>9} {'p95 ms':>9} {'p99 ms':>9} {'mean ms':>9} {'max ms':>9}"
+    hdr = (f"{'size':>7} {'path':>8} {'n':>4} {'spans':>6} {'p50 ms':>9} {'p95 ms':>9} "
+           f"{'p99 ms':>9} {'mean ms':>9} {'max ms':>9}")
     print(hdr)
     print("-" * len(hdr))
     for size in sizes:
         r = results[size]
-        print(f"{_size_label(size):>7} {r['path']:>8} {r['spans']:>6} "
+        print(f"{_size_label(size):>7} {r['path']:>8} {r['n']:>4} {r['spans']:>6} "
               f"{r['p50']:>9.1f} {r['p95']:>9.1f} {r['p99']:>9.1f} {r['mean']:>9.1f} {r['max']:>9.1f}")
     print()
 
