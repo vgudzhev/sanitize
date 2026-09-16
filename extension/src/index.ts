@@ -6,8 +6,11 @@ import type {
   ToolCallEvent,
   ContentBlock,
   ContextMessage,
+  Span,
 } from "./types.js";
 import { Vault } from "./vault.js";
+import { ChunkCache } from "./chunk-cache.js";
+import { detectChunked } from "./chunker.js";
 import { substitute } from "./substitute.js";
 import { SanitizeClient, SanitizeUnavailableError, PolicyVerificationError } from "./client.js";
 import { verifyEgress } from "./egress.js";
@@ -87,6 +90,25 @@ const extension = (api: ExtensionAPI) => {
 
   let policyVersion = "local";
   let policyVerificationFailed = false;
+
+  // Large text blocks are scanned in overlapping chunks; chunks already seen
+  // clean are skipped. Only clean chunks are cached, so anything with a
+  // finding always goes through the vault again.
+  const chunkCache = new ChunkCache();
+  let lastDetectPolicyVersion = "local";
+  const scanBlock = (
+    text: string,
+    hints: { source: string; tool?: string },
+  ): Promise<Span[]> =>
+    detectChunked(
+      text,
+      async (chunk) => {
+        const result = await client.detect({ text: chunk, hints });
+        lastDetectPolicyVersion = result.policy_version;
+        return result.spans;
+      },
+      chunkCache,
+    );
 
   const restoreVault = (): number => {
     if (!vaultPassphrase) return 0;
@@ -216,15 +238,15 @@ const extension = (api: ExtensionAPI) => {
       const newContent: ContentBlock[] = await Promise.all(
         event.content.map(async (block) => {
           if (block.type !== "text") return block;
-          const result = await client.detect({
-            text: block.text,
-            hints: { source: "tool_result", tool: event.toolName },
+          const spans = await scanBlock(block.text, {
+            source: "tool_result",
+            tool: event.toolName,
           });
-          if (result.spans.length === 0) return block;
-          if (audit) audit.emit(result.spans, "tool_result", result.policy_version);
+          if (spans.length === 0) return block;
+          if (audit) audit.emit(spans, "tool_result", lastDetectPolicyVersion);
           return {
             type: "text" as const,
-            text: substitute(block.text, result.spans, vault),
+            text: substitute(block.text, spans, vault),
           };
         }),
       );
@@ -319,16 +341,13 @@ const extension = (api: ExtensionAPI) => {
           const content: ContentBlock[] = await Promise.all(
             message.content.map(async (block) => {
               if (block.type !== "text") return block;
-              const result = await client.detect({
-                text: block.text,
-                hints: { source },
-              });
-              if (result.spans.length === 0) return block;
-              found += result.spans.length;
-              if (audit) audit.emit(result.spans, source, result.policy_version);
+              const spans = await scanBlock(block.text, { source });
+              if (spans.length === 0) return block;
+              found += spans.length;
+              if (audit) audit.emit(spans, source, lastDetectPolicyVersion);
               return {
                 type: "text" as const,
-                text: substitute(block.text, result.spans, vault),
+                text: substitute(block.text, spans, vault),
               };
             }),
           );
@@ -427,6 +446,7 @@ const extension = (api: ExtensionAPI) => {
       deleteVaultFile(vaultPath);
     }
     vault.clear();
+    chunkCache.clear();
   });
 };
 
