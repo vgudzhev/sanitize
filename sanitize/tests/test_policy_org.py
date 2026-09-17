@@ -47,7 +47,7 @@ class TestTightenMerge:
     def test_local_cannot_raise_gliner_threshold(self, central):
         local = {"detectors": {"gliner": {"threshold": 0.95}}}
         result = _tighten_merge(central, local)
-        assert result["detectors"]["gliner"]["threshold"] == 0.85
+        assert result["detectors"]["gliner"]["threshold"] == 0.5
 
     def test_local_can_add_gliner_labels(self, central):
         local = {"detectors": {"gliner": {"labels": ["medical condition"]}}}
@@ -81,7 +81,7 @@ class TestTightenMerge:
         result = _tighten_merge(central, {})
         assert result["deny_paths"] == central["deny_paths"]
         assert result["allow"] == sorted(central["allow"])
-        assert result["detectors"]["gliner"]["threshold"] == 0.85
+        assert result["detectors"]["gliner"]["threshold"] == 0.5
 
 
 class TestPermissiveMerge:

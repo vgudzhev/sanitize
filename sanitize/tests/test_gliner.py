@@ -11,6 +11,7 @@ from sanitize.recognizers.gliner import (
     DEFAULT_THRESHOLD,
     GlinerRecognizer,
     LABEL_TO_ENTITY,
+    _flatten_gliner2,
 )
 
 
@@ -113,11 +114,68 @@ class TestGlinerUnavailable:
 
     def test_import_failure_sets_unavailable(self):
         rec = GlinerRecognizer()
-        with patch.dict("sys.modules", {"gliner": None}):
+        with patch.dict("sys.modules", {"gliner": None, "gliner2": None}):
             rec._available = None
             available = rec._ensure_model()
             assert available is False
             assert rec._available is False
+
+
+class TestV1Fallback:
+    def test_fallback_drops_gliner2_only_labels_and_raises_threshold(self):
+        import types
+
+        fake_gliner = types.ModuleType("gliner")
+        fake_cls = MagicMock()
+        fake_cls.from_pretrained.return_value = MagicMock()
+        fake_gliner.GLiNER = fake_cls
+
+        rec = GlinerRecognizer(labels=["person", "password", "api_key", "medical condition"])
+        with patch.dict("sys.modules", {"gliner2": None, "gliner": fake_gliner}):
+            assert rec._ensure_model() is True
+
+        assert rec._backend == "gliner"
+        fake_cls.from_pretrained.assert_called_once_with("urchade/gliner_multi_pii-v1")
+        assert rec.labels == ["person", "medical condition"]
+        assert rec.threshold == 0.85
+
+
+class TestGliner2Backend:
+    """gliner2 returns {"entities": {label: [{text, start, end, confidence}]}}."""
+
+    def test_flatten_nested_output(self):
+        result = {
+            "entities": {
+                "person": [{"text": "Tim Cook", "start": 15, "end": 23, "confidence": 0.92}],
+                "email": ["no-span-form-is-skipped"],
+            }
+        }
+        assert _flatten_gliner2(result) == [
+            {"label": "person", "start": 15, "end": 23, "score": 0.92},
+        ]
+
+    def test_flatten_passes_through_flat_list(self):
+        flat = [{"label": "person", "start": 0, "end": 3, "score": 0.9}]
+        assert _flatten_gliner2(flat) == flat
+
+    def test_analyze_uses_extract_entities_long(self):
+        rec = GlinerRecognizer()
+        mock_model = MagicMock()
+        mock_model.extract_entities_long.return_value = {
+            "entities": {"api_key": [{"text": "abc", "start": 4, "end": 7, "confidence": 0.8}]}
+        }
+        rec._model = mock_model
+        rec._available = True
+        rec._backend = "gliner2"
+
+        results = rec.analyze("key abc", ["API_KEY"])
+        assert len(results) == 1
+        assert results[0].entity_type == "API_KEY"
+        assert (results[0].start, results[0].end) == (4, 7)
+        kwargs = mock_model.extract_entities_long.call_args.kwargs
+        assert kwargs["include_spans"] is True
+        assert kwargs["threshold"] == DEFAULT_THRESHOLD
+        mock_model.predict_entities.assert_not_called()
 
 
 class TestLabelMapping:

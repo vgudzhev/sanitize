@@ -112,7 +112,7 @@ class TestSecretDetection:
         text = "password=MyS3cretPassw0rd!"
         spans, _ = detect(text, policy_config=policy)
         types = {s.type for s in spans}
-        assert "GENERIC_SECRET" in types
+        assert types & {"GENERIC_SECRET", "PASSWORD"}
 
     def test_github_token(self, policy):
         text = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
@@ -394,8 +394,8 @@ class TestChunkedDetection:
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
         sanitize.engine._analyzer_cache = {}
 
-        # Text passes prefilter (password=) but has no real detections
-        clean_text = "# set password=ok then restart\n" * 200
+        # Text passes prefilter (token=) but has no real detections
+        clean_text = "# set token= then restart\n" * 200
         assert len(clean_text) > CHUNK_THRESHOLD
 
         detect(clean_text, policy_config=policy)
@@ -408,7 +408,7 @@ class TestChunkedDetection:
         sanitize.engine._CLEAN_CHUNK_CACHE.clear()
         sanitize.engine._analyzer_cache = {}
 
-        clean_text = "# set password=ok then restart\n" * 200
+        clean_text = "# set token= then restart\n" * 200
         assert len(clean_text) > CHUNK_THRESHOLD
 
         detect(clean_text, policy_config=policy)
@@ -448,7 +448,7 @@ class TestChunkedDetection:
         sanitize.engine._analyzer_cache = {}
 
         policy_a = load_policy()
-        clean_text = "# set password=ok then restart\n" * 200
+        clean_text = "# set token= then restart\n" * 200
         detect(clean_text, policy_config=policy_a)
         cached_a = len(sanitize.engine._CLEAN_CHUNK_CACHE)
         assert cached_a > 0

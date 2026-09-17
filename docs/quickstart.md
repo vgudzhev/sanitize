@@ -25,7 +25,13 @@ pip install -e ".[dev]"
 python -m spacy download en_core_web_sm
 ```
 
-For person/org/address detection (recommended):
+For contextual PII detection (person names, credentials, financial data — recommended):
+
+```bash
+pip install "gliner2[local]>=2.0.0"
+```
+
+Or with the classic GLiNER backend (fewer entity types):
 
 ```bash
 pip install "torch==2.2.2" "gliner==0.2.10" "transformers>=4.38,<4.45" "numpy<2"
@@ -118,16 +124,21 @@ custom:
   literals:
     - "acme-internal.corp"
 
-# Add GLiNER labels for domain-specific entities
+# GLiNER model and labels (default: fastino/gliner2-privacy-filter-PII-multi)
 detectors:
   gliner:
+    # model: urchade/gliner_multi_pii-v1  # fallback if gliner2 not installed
     labels:
       - person
+      - email
+      - phone_number
       - address
       - organization
-      - internal hostname
-      - project codename
-      - medical condition
+      - government_id
+      - api_key
+      - password
+      - bank_account
+      - medical condition      # custom label
 
 # Allowlist values that aren't secrets
 allow:

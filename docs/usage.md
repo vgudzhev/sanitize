@@ -77,14 +77,22 @@ Example `sanitize.yaml`:
 ```yaml
 detectors:
   gliner:
+    # model: fastino/gliner2-privacy-filter-PII-multi  # default (42 PII types)
+    # model: urchade/gliner_multi_pii-v1               # fallback if gliner2 not installed
     labels:
       - person
+      - email
+      - phone_number
       - address
       - organization
+      - government_id
+      - api_key
+      - password
+      - bank_account
       - internal hostname
       - project codename
       - medical condition      # custom label
-    threshold: 0.85
+    threshold: 0.5
   llm:
     enabled: true
     model: llama3.2:3b

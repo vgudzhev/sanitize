@@ -33,14 +33,27 @@ DEFAULTS: dict = {
     ],
     "detectors": {
         "gliner": {
+            "model": "fastino/gliner2-privacy-filter-PII-multi",
             "labels": [
                 "person",
+                "email",
+                "phone_number",
                 "address",
                 "organization",
+                "government_id",
+                "password",
+                "secret",
+                "api_key",
+                "access_token",
+                "ip_address",
+                "bank_account",
+                "iban",
+                "payment_card",
+                "date_of_birth",
                 "internal hostname",
                 "project codename",
             ],
-            "threshold": 0.85,
+            "threshold": 0.5,
         },
         "llm": {
             "enabled": False,

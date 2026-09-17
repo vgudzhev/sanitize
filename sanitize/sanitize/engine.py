@@ -88,10 +88,15 @@ def _build_analyzer(policy_config: dict) -> tuple[AnalyzerEngine, list[str]]:
     gliner_config = policy_config.get("detectors", {}).get("gliner", {})
     gliner_labels = gliner_config.get("labels")
     gliner_threshold = gliner_config.get("threshold", 0.5)
-    registry.add_recognizer(GlinerRecognizer(
-        labels=gliner_labels,
-        threshold=gliner_threshold,
-    ))
+    gliner_model = gliner_config.get("model")
+    gliner_kwargs = {}
+    if gliner_labels:
+        gliner_kwargs["labels"] = gliner_labels
+    if gliner_threshold:
+        gliner_kwargs["threshold"] = gliner_threshold
+    if gliner_model:
+        gliner_kwargs["model_name"] = gliner_model
+    registry.add_recognizer(GlinerRecognizer(**gliner_kwargs))
     detectors_run.append("gliner")
 
     for rec in load_custom_recognizers(policy_config):
