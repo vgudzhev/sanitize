@@ -4,7 +4,7 @@ Local sensitive-data scrubbing layer for coding agents. Every byte that leaves t
 
 Provider-agnostic: works with any LLM backend (Anthropic, OpenAI, Google, Ollama, etc.) via the pi agent harness.
 
-**[Quick Start](docs/quickstart.md)** — get running in 5 minutes | **[Usage Guide](docs/usage.md)** — full reference | **[Architecture](docs/architecture.md)** — how it works
+**[Quick Start](docs/quickstart.md)** — get running in 5 minutes | **[Usage Guide](docs/usage.md)** — full reference | **[Architecture](docs/architecture.md)** — how it works | **[Enterprise readiness plan](docs/enterprise-readiness-plan.md)** — rating, findings, roadmap
 
 ## Architecture
 
@@ -89,7 +89,10 @@ pip install -e ".[dev]"
 python -m spacy download en_core_web_sm
 
 # GLiNER (Layer 4) — optional but recommended
-pip install "torch==2.2.2" "gliner==0.2.10" "transformers>=4.38,<4.45" "numpy<2"
+# Default model: fastino/gliner2-privacy-filter-PII-multi (42 PII types)
+pip install "gliner2[local]>=2.0.0"
+# Fallback backend (fewer entity types) if gliner2 cannot be installed:
+# pip install "torch==2.2.2" "gliner==0.2.10" "transformers>=4.38,<4.45" "numpy<2"
 ```
 
 Start it:
@@ -130,7 +133,7 @@ Key defaults:
 - sanitize URL: `http://127.0.0.1:7411`
 - Timeout: 4000ms
 - Fail-closed: always (if sanitize is unreachable, content is withheld)
-- GLiNER threshold: 0.85
+- GLiNER model: `fastino/gliner2-privacy-filter-PII-multi`, threshold 0.5 (falls back to `urchade/gliner_multi_pii-v1` at 0.85 if only `gliner` is installed)
 - LLM layer: disabled
 
 ### Deny-list
